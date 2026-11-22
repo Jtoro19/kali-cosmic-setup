@@ -30,14 +30,14 @@ kbd_variant_valid() {
 
 # kbd_layout_desc <layout>: the description of the layout ("English (US)").
 kbd_layout_desc() {
-  _kbd_lst_section layout | awk -v l="$1" '$1 == l { sub(/^[ \t]*[^ \t]+[ \t]+/, ""); print; exit }'
+  _kbd_lst_section layout | awk -v l="$1" '$1 == l { sub(/^[ \t]*[^ \t]+[ \t]+/, ""); sub(/[ \t]+$/, ""); print; exit }'
 }
 
 # kbd_variant_desc <layout> <variant>: the description of the variant without
 # the "<layout>: " prefix.
 kbd_variant_desc() {
   _kbd_lst_section variant | awk -v l="$1:" -v v="$2" '
-    $1 == v && $2 == l { sub(/^[ \t]*[^ \t]+[ \t]+[^ \t]+[ \t]+/, ""); print; exit }'
+    $1 == v && $2 == l { sub(/^[ \t]*[^ \t]+[ \t]+[^ \t]+[ \t]+/, ""); sub(/[ \t]+$/, ""); print; exit }'
 }
 
 # kbd_parse_choice <value>: validate "keep" or "<layout>[:<variant>]" against

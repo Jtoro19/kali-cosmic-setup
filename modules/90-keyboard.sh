@@ -50,7 +50,7 @@ _kbd_default_file_render() {
 
 # _kbd_debconf_dump: the keyboard-configuration answers as "question<TAB>value".
 _kbd_debconf_dump() {
-  { sudo_read debconf-show "$_KBD_DEBCONF_PKG" || true; } | awk '
+  { sudo_read env LC_ALL=C debconf-show "$_KBD_DEBCONF_PKG" || true; } | awk '
     { sub(/^[* ] /, ""); p = index($0, ": "); q = $0; v = ""
       if (p) { q = substr($0, 1, p - 1); v = substr($0, p + 2) } else { sub(/:$/, "", q) }
       sub(/^keyboard-configuration\//, "", q); sub(/[ \t]+$/, "", v); print q "\t" v }'
@@ -99,33 +99,50 @@ _kbd_num() {
   [[ "$1" =~ ^[0-9]+$ ]] && printf '%s' "$1" || printf '%s' "$2"
 }
 
+# _kbd_display_stale <stored> <wanted>: true when a stored display answer is empty
+# or the evdev.lst text of another layout (its part before " - " is a layout
+# description other than the wanted one). Other wording is cosmetic, not stale.
+_kbd_display_stale() {
+  local have="$1" want="$2"
+  [[ "$have" == "$want" ]] && return 1
+  [[ -z "$have" ]] && return 0
+  _kbd_lst_section layout | awk -v h="${have%% - *}" '
+    { sub(/^[ \t]*[^ \t]+[ \t]+/, ""); sub(/[ \t]+$/, "") } $0 == h { f = 1 } END { exit !f }'
+}
+
 # --- applying -----------------------------------------------------------------------------
 
 # _kbd_apply_debconf <layout> <variant>: make the keyboard-configuration answers
 # the chosen layout, set non-interactively, and let the package rewrite its
 # configuration without asking.
 _kbd_apply_debconf() {
-  local layout="$1" variant="$2" dump keymap ldesc vdesc q want have stale=0
+  local layout="$1" variant="$2" dump keymap ldesc="" vdesc="" q want have stale=0
   dump="$(_kbd_debconf_dump)"
   keymap="$layout${variant:+($variant)}"
   ldesc="$(kbd_layout_desc "$layout")"
-  vdesc="$ldesc"
-  [[ -n "$variant" ]] && vdesc="$ldesc - $(kbd_variant_desc "$layout" "$variant")"
-  # The display answers are the XKB descriptions of evdev.lst (checked on Kali:
-  # dpkg-reconfigure words them the same). One that differs is stale, for example
-  # left by an interrupted run, so it is rewritten too. The variant display of a
-  # layout without variant is not compared: its wording was not confirmed.
+  if [[ -n "$variant" ]]; then
+    vdesc="$(kbd_variant_desc "$layout" "$variant")"
+    if [[ -n "$ldesc" && -n "$vdesc" ]]; then vdesc="$ldesc - $vdesc"; else vdesc=""; fi
+  else
+    vdesc="$ldesc"
+  fi
+  # The code answers decide: one that differs makes the answers stale. The display
+  # answers are cosmetic and the package words them itself (possibly localized),
+  # so a display answer is rewritten only when it is empty or is another layout's
+  # evdev.lst text (left by an interrupted run). Different wording is not stale,
+  # which keeps the second run at 0 changes.
   local -a answers=(
     "modelcode=$_KBD_MODEL" "layoutcode=$layout" "variantcode=$variant" "optionscode="
     "xkb-keymap=$keymap"
   )
-  [[ -z "$ldesc" ]] || answers+=("layout=$ldesc")
-  [[ -z "$variant" || -z "$vdesc" ]] || answers+=("variant=$vdesc")
   for q in "${answers[@]}"; do
     want="${q#*=}"
     have="$(_kbd_dc "$dump" "${q%%=*}")"
     [[ "$have" == "$want" ]] || stale=1
   done
+  if [[ -n "$ldesc" ]] && _kbd_display_stale "$(_kbd_dc "$dump" layout)" "$ldesc"; then stale=1; fi
+  # The variant display of a layout without variant is not compared (wording unconfirmed).
+  if [[ -n "$variant" && -n "$vdesc" ]] && _kbd_display_stale "$(_kbd_dc "$dump" variant)" "$vdesc"; then stale=1; fi
   ((stale)) || return 0
   log_change "set the keyboard-configuration answers to $keymap (debconf)"
   {
@@ -134,13 +151,13 @@ _kbd_apply_debconf() {
     printf '%s %s/%s string %s\n' "$_KBD_DEBCONF_PKG" "$_KBD_DEBCONF_PKG" variantcode "$variant"
     printf '%s %s/%s string\n' "$_KBD_DEBCONF_PKG" "$_KBD_DEBCONF_PKG" optionscode
     printf '%s %s/%s select %s\n' "$_KBD_DEBCONF_PKG" "$_KBD_DEBCONF_PKG" xkb-keymap "$keymap"
-    printf '%s %s/%s select %s\n' "$_KBD_DEBCONF_PKG" "$_KBD_DEBCONF_PKG" layout "$ldesc"
-    printf '%s %s/%s select %s\n' "$_KBD_DEBCONF_PKG" "$_KBD_DEBCONF_PKG" variant "$vdesc"
-  } | run_sudo env DEBIAN_FRONTEND=noninteractive debconf-set-selections
+    [[ -z "$ldesc" ]] || printf '%s %s/%s select %s\n' "$_KBD_DEBCONF_PKG" "$_KBD_DEBCONF_PKG" layout "$ldesc"
+    [[ -z "$vdesc" ]] || printf '%s %s/%s select %s\n' "$_KBD_DEBCONF_PKG" "$_KBD_DEBCONF_PKG" variant "$vdesc"
+  } | run_sudo env DEBIAN_FRONTEND=noninteractive LC_ALL=C debconf-set-selections
   # The package reads /etc/default/keyboard first and lets it win over the
   # answers, so the file must already hold the chosen layout (module_apply
   # writes it before this); noninteractive, it then asks nothing.
-  run_sudo env DEBIAN_FRONTEND=noninteractive dpkg-reconfigure -f noninteractive "$_KBD_DEBCONF_PKG"
+  run_sudo env DEBIAN_FRONTEND=noninteractive LC_ALL=C dpkg-reconfigure -f noninteractive "$_KBD_DEBCONF_PKG"
 }
 
 # _kbd_apply_xkb_user <layout> <variant>: the COSMIC keyboard config of the
@@ -285,17 +302,18 @@ _kbd_verify() {
   if [[ -z "$dump" ]]; then
     log_warn "debconf-show returned nothing for $_KBD_DEBCONF_PKG: the debconf answers could not be read"
   fi
-  # The display answers must also describe the chosen layout (evdev.lst wording),
-  # which catches a stale one left by an interrupted earlier run.
+  # The display answers are cosmetic: the package words them itself and the text
+  # may be localized, so a mismatch with evdev.lst is only a warning.
   local ldesc vdesc
   ldesc="$(kbd_layout_desc "$layout")"
   if [[ -n "$ldesc" && -n "$dump" && "$(_kbd_dc "$dump" layout)" != "$ldesc" ]]; then
-    bad+=("debconf $_KBD_DEBCONF_PKG/layout is \"$(_kbd_dc "$dump" layout)\" (wanted \"$ldesc\")")
+    log_warn "debconf $_KBD_DEBCONF_PKG/layout is \"$(_kbd_dc "$dump" layout)\" (wanted \"$ldesc\"); the display answer is cosmetic"
   fi
   if [[ -n "$variant" && -n "$ldesc" && -n "$dump" ]]; then
-    vdesc="$ldesc - $(kbd_variant_desc "$layout" "$variant")"
-    [[ "$(_kbd_dc "$dump" variant)" == "$vdesc" ]] ||
-      bad+=("debconf $_KBD_DEBCONF_PKG/variant is \"$(_kbd_dc "$dump" variant)\" (wanted \"$vdesc\")")
+    vdesc="$(kbd_variant_desc "$layout" "$variant")"
+    if [[ -n "$vdesc" && "$(_kbd_dc "$dump" variant)" != "$ldesc - $vdesc" ]]; then
+      log_warn "debconf $_KBD_DEBCONF_PKG/variant is \"$(_kbd_dc "$dump" variant)\" (wanted \"$ldesc - $vdesc\"); the display answer is cosmetic"
+    fi
   fi
 
   [[ "$(_kbd_localectl_field "X11 Layout")" == "$layout" ]] ||

@@ -28,7 +28,7 @@ GXKB="$GH/.config/cosmic/com.system76.CosmicComp/v1/xkb_config"
 # debconf-show: the answers kept in $FAKE_STATE/kdc (question=value lines).
 cat >"$WORK/bin/debconf-show" <<'EOS'
 #!/bin/sh
-echo "debconf-show $*" >>"$FAKE_STATE/all.log"
+echo "debconf-show $* LC_ALL=${LC_ALL:-}" >>"$FAKE_STATE/all.log"
 # FAKE_DEBCONF_EMPTY=1: debconf-show prints nothing (an empty read).
 [ -n "${FAKE_DEBCONF_EMPTY:-}" ] && exit 0
 while IFS= read -r l; do
@@ -59,7 +59,7 @@ EOS
 # (FAKE_RECONF_NOOP=1: does nothing).
 cat >"$WORK/bin/dpkg-reconfigure" <<'EOS'
 #!/bin/sh
-echo "dpkg-reconfigure $* DEBIAN_FRONTEND=${DEBIAN_FRONTEND:-}" >>"$FAKE_STATE/all.log"
+echo "dpkg-reconfigure $* DEBIAN_FRONTEND=${DEBIAN_FRONTEND:-} LC_ALL=${LC_ALL:-}" >>"$FAKE_STATE/all.log"
 [ -n "${FAKE_RECONF_NOOP:-}" ] && exit 0
 get() { sed -n "s/^$1=//p" "$FAKE_STATE/kdc" | head -n 1; }
 f="${KCS_ROOT:-}/etc/default/keyboard"
@@ -75,6 +75,8 @@ set_q xkb-keymap "$fl${fv:+($fv)}"
 lst="${KCS_ROOT:-}/usr/share/X11/xkb/rules/evdev.lst"
 ld="$(awk -v l="$fl" '/^! /{ c = ($2 == "layout"); next } c && $1 == l { sub(/^[ \t]*[^ \t]+[ \t]+/, ""); print; exit }' "$lst")"
 vd="$(awk -v l="$fl:" -v v="$fv" '/^! /{ c = ($2 == "variant"); next } c && $1 == v && $2 == l { sub(/^[ \t]*[^ \t]+[ \t]+[^ \t]+[ \t]+/, ""); print; exit }' "$lst")"
+# FAKE_DC_LOCALIZED=1: the display answers come out worded differently (localized).
+[ -n "${FAKE_DC_LOCALIZED:-}" ] && { ld="[loc] $ld"; vd="[loc] $vd"; }
 set_q layout "$ld"; [ -n "${FAKE_DC_KEEP_VARIANT:-}" ] || set_q variant "$ld${vd:+ - $vd}"
 sed -i -e "s|^XKBMODEL=.*|XKBMODEL=\"$(get modelcode)\"|" -e "s|^XKBLAYOUT=.*|XKBLAYOUT=\"$(get layoutcode)\"|" \
   -e "s|^XKBVARIANT=.*|XKBVARIANT=\"$(get variantcode)\"|" -e "s|^XKBOPTIONS=.*|XKBOPTIONS=\"$(get optionscode)\"|" "$f"
@@ -535,8 +537,8 @@ reset_state
 put_installer_layout us altgr-intl
 sed -i 's/^variant=.*/variant=Spanish (Latin American)/' "$FAKE_STATE/kdc"
 FAKE_DC_KEEP_VARIANT=1 kb --keyboard us:altgr-intl
-[[ "$rc" != 0 ]] && grep -q 'debconf keyboard-configuration/variant is "Spanish (Latin American)" (wanted "English (US) - English (intl., with AltGr dead keys)")' "$WORK/out"
-check "W1: a stale display answer left by an interrupted run (codes already right) fails loudly" $?
+[[ "$rc" == 0 ]] && grep -q 'warn.*debconf keyboard-configuration/variant is "Spanish (Latin American)" (wanted "English (US) - English (intl., with AltGr dead keys)").*cosmetic' "$WORK/out"
+check "W1: a display answer that stays stale only warns (it is cosmetic)" $?
 reset_state
 put_installer_layout us altgr-intl
 sed -i -e 's/^variant=.*/variant=Spanish (Latin American)/' -e 's/^layout=.*/layout=Spanish (Latin American)/' "$FAKE_STATE/kdc"
@@ -550,6 +552,31 @@ reset_state
 FAKE_DEBCONF_EMPTY=1 kb --keyboard us:altgr-intl
 grep -q 'debconf-show returned nothing' "$WORK/out"
 check "W1: an empty debconf-show read logs a warning instead of skipping silently" $?
+
+# --- M13c: the display answers are cosmetic -------------------------------------------------------
+reset_state
+FAKE_DC_LOCALIZED=1 kb --keyboard us:altgr-intl
+[[ "$rc" == 0 ]] && grep -qi 'warn.*cosmetic' "$WORK/out" && [[ "$(dc layoutcode)" == us && "$(dc variantcode)" == altgr-intl ]]
+check "M13c: localized display wording succeeds with a warning" $?
+FAKE_DC_LOCALIZED=1 kb --keyboard us:altgr-intl
+[[ "$rc" == 0 ]] && grep -q 'total changes: 0' "$WORK/out" && [[ "$(calls dpkg-reconfigure)" == 0 && "$(calls debconf-set-selections)" == 0 ]]
+check "M13c: and the second run with that wording changes nothing" $?
+reset_state
+kb --keyboard latam
+[[ "$rc" == 0 ]]
+check "M13c: latam (no variant) run succeeds" $?
+kb --keyboard latam
+[[ "$rc" == 0 ]] && grep -q 'total changes: 0' "$WORK/out"
+check "M13c: latam repeat run changes nothing" $?
+reset_state
+put_installer_layout us altgr-intl
+kb --keyboard latam
+grep -q 'LC_ALL=C' "$FAKE_STATE/sudo.log" && grep -q 'env DEBIAN_FRONTEND=noninteractive LC_ALL=C debconf-set-selections' "$FAKE_STATE/sudo.log" &&
+  grep -q 'env DEBIAN_FRONTEND=noninteractive LC_ALL=C dpkg-reconfigure' "$FAKE_STATE/sudo.log" &&
+  grep -q 'debconf-show keyboard-configuration LC_ALL=C' "$FAKE_STATE/all.log" && ! grep -q 'debconf-show.*LC_ALL=$' "$FAKE_STATE/all.log"
+check "M13c: debconf-show, set-selections and dpkg-reconfigure run under LC_ALL=C" $?
+! grep -q 'layout select $' "$FAKE_STATE/selections.log" && ! grep -q 'variant select $' "$FAKE_STATE/selections.log"
+check "M13c: no display answer is written with an empty value" $?
 
 # --- final review W2: the final message says when the login screen was skipped -------------------
 reset_state

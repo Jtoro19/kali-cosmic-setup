@@ -210,16 +210,21 @@ tests/test-keyboard.sh
 
 ## Final review findings (M13b)
 
-14. **Display answers are asserted against evdev.lst.** Checked on the Kali VM
-    (`debconf-show keyboard-configuration` after `us:altgr-intl`): `layout` is
-    "English (US)" and `variant` is "English (US) - English (intl., with AltGr
-    dead keys)", exactly the `evdev.lst` descriptions. So the verification now
-    requires `layout` to equal the layout description and, when a variant is
-    chosen, `variant` to equal "<layout description> - <variant description>"
-    (the apply step treats a differing display answer as stale and rewrites it,
-    so an interrupted earlier run self-heals). The old "differs from the
-    installer's" check stays. The variant display of a layout without variant is
-    not asserted: its wording was not confirmed on the VM. When `debconf-show`
+14. **Display answers are cosmetic (M13c, supersedes the M13b assertion).** The
+    `layout` and `variant` answers of `keyboard-configuration` are display text:
+    the package words them itself and the stored wording may be localized or
+    differ from `evdev.lst`. So a mismatch with the `evdev.lst` description only
+    logs a warning in the verification; the code answers (`layoutcode`,
+    `variantcode`, `modelcode`, `optionscode`, `xkb-keymap`), `/etc/default/keyboard`,
+    localectl, the console and both COSMIC `xkb_config` files stay hard checks.
+    `debconf-show`, `debconf-set-selections` and `dpkg-reconfigure` run under
+    `LC_ALL=C` so the wording is not localized, and the `evdev.lst` descriptions are
+    trimmed. The apply step rewrites a display answer only when it is empty or is
+    the `evdev.lst` text of another layout (left by an interrupted run), or when a
+    code answer changed; different wording is never rewritten, so the second run
+    reports 0 changes. The variant display is written only when both descriptions
+    are non-empty, and no `select` is written with an empty value. The variant
+    display of a layout without variant is not compared. When `debconf-show`
     returns nothing the run logs a warning instead of skipping silently.
 15. **Final message with a skipped greeter.** When the login screen step was
     skipped (symlink, existing backup, no greeter user) the final `log_ok` says
