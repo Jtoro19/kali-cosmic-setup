@@ -99,6 +99,18 @@ Dropped, with the reason:
   `/etc/apt/keyrings` and our `Signed-By`. The `brave-browser` deb's cron script
   exits at once (it never adds the Chrome repo) and no second sources file
   appears (checked on the VM).
+- **Brave global trust symlink (removed).** The `brave-keyring` package's
+  postinst runs `ln -sf /usr/share/keyrings/brave-browser-archive-keyring.gpg
+  /etc/apt/trusted.gpg.d/brave-browser-release.gpg` (unless its own
+  `brave-browser-release.{list,sources}` file is present). The link is not in
+  the package's file list, and a key in `trusted.gpg.d` is trusted for every
+  repository, which is wider than our `Signed-By` plus the pin (porting rule 3).
+  Decision by the orchestrator: after installing brave-browser the module
+  removes that symlink (`rm -f`, no backup, a symlink holds no data; the change
+  is logged). It runs on every pass because each upgrade of `brave-keyring`
+  recreates the link, so it is cleaned at the next run of the module. Only a
+  symlink is removed; a regular file there is left alone with a warning.
+  `apt update` keeps working because the repo is verified through `Signed-By`.
 - **PeaZip build**: the GTK2 `.deb` (`peazip_11.4.0.LINUX.GTK2-1_amd64.deb`),
   not Qt6, so no Qt stack is pulled into a GTK/COSMIC desktop. The upstream
   `.deb` declares no dependencies, so the module installs `libgtk2.0-0t64`
@@ -160,8 +172,7 @@ sudo apt-get purge brave-browser brave-keyring peazip
 sudo apt-get autoremove          # review the list first: drops libgtk2.0-0t64 once peazip is gone
 sudo rm -f /etc/apt/sources.list.d/brave-browser.sources /etc/apt/preferences.d/brave-browser \
   /etc/apt/keyrings/brave-browser-archive-keyring.gpg
-# the brave-browser package also drops these (checked on the VM); purge removes
-# its own files, the symlink below is created by its postinst and may stay:
+# the module already removes the brave-keyring symlink below; purge removes it too
 sudo rm -f /etc/apt/trusted.gpg.d/brave-browser-release.gpg
 sudo apt-get update
 # core packages: purge any you do not want, for example
@@ -179,6 +190,7 @@ ls /usr/share/applications | grep -i -E 'peazip|brave'
 batcat --version; fdfind --version; eza --version; rg --version; tldr --version
 apt-cache policy brave-browser            # candidate from the Brave repo, priority 500
 apt-cache policy brave-origin             # other Brave package: blocked, Candidate: (none)
+ls -l /etc/apt/trusted.gpg.d/brave-browser-release.gpg   # must not exist
 gpg --show-keys --with-colons /etc/apt/keyrings/brave-browser-archive-keyring.gpg | grep '^fpr'
 ./install.sh --only packages --dry-run    # "Nothing to change"
 tests/test-packages.sh

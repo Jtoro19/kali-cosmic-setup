@@ -65,7 +65,25 @@ _packages_brave() {
   if ((CHANGES > before)) || ! apt_has_candidate brave-browser; then
     apt_update_once --force || return 1
   fi
-  ensure_packages brave-browser
+  ensure_packages brave-browser || return 1
+  _packages_brave_untrust
+}
+
+# _packages_brave_untrust: brave-keyring's postinst links its key into
+# /etc/apt/trusted.gpg.d, which makes it trusted for EVERY repository, wider
+# than our Signed-By plus pin. Remove that symlink (it is not in the package's
+# file list; every upgrade of brave-keyring recreates it, so this runs on every
+# pass). Only a symlink is removed; a regular file there is the admin's and is
+# left alone with a warning. A symlink needs no backup.
+_packages_brave_untrust() {
+  local link
+  link="$(rootpath /etc/apt/trusted.gpg.d/brave-browser-release.gpg)"
+  if [[ -L "$link" ]]; then
+    log_change "remove $link (global apt trust that brave-keyring adds; Signed-By and the pin stay)"
+    run_sudo rm -f -- "$link"
+  elif [[ -e "$link" ]]; then
+    log_warn "$link is a regular file, not the brave-keyring symlink: leaving it alone (it trusts Brave's key for every repository)"
+  fi
 }
 
 # _packages_sha256_ok <file> <sha256>: true when the file has that SHA-256.

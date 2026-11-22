@@ -3,7 +3,9 @@
 # PeaZip upstream .deb) against fake apt-get, dpkg-query, apt-cache, curl and
 # gpg. Never touches the real system.
 # `! cmd; check $?` is deliberate: check reads the inverted status.
-# shellcheck disable=SC2251,SC2319
+# SC2030/SC2031: the sections that run in a ( ) subshell do so on purpose, to
+# source the library and module without leaking into this shell.
+# shellcheck disable=SC2251,SC2319,SC2030,SC2031
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -146,6 +148,34 @@ pk
 check "second run: total changes: 0, no apt-get, no download" $?
 ! compgen -G "$KCS_ROOT/etc/apt/*/*.bak.*" >/dev/null
 check "second run: no backup files are created" $?
+
+# --- Brave's global trust symlink -------------------------------------------
+# brave-keyring's postinst links its key into /etc/apt/trusted.gpg.d, which makes
+# the key trusted for every repository (wider than Signed-By plus the pin). The
+# module removes that symlink after installing brave-browser.
+TRUST="$KCS_ROOT/etc/apt/trusted.gpg.d/brave-browser-release.gpg"
+reset_state
+pk
+[[ "$rc" == 0 && ! -e "$TRUST" && ! -L "$TRUST" ]] && grep -q 'remove.*brave-browser-release.gpg' "$WORK/out"
+check "brave trust: the postinst symlink in trusted.gpg.d is removed and logged" $?
+pk
+[[ "$rc" == 0 ]] && grep -q 'total changes: 0' "$WORK/out" && [[ ! -L "$TRUST" ]]
+check "brave trust: a second run has nothing to remove (total changes: 0)" $?
+# An upgrade of brave-keyring recreates it: the next run removes it again.
+mkdir -p "$(dirname "$TRUST")"
+ln -sf /usr/share/keyrings/brave-browser-archive-keyring.gpg "$TRUST"
+pk
+[[ "$rc" == 0 && ! -L "$TRUST" ]] && grep -q 'total changes: 1' "$WORK/out"
+check "brave trust: a symlink recreated by an upgrade is removed again (1 change)" $?
+ln -sf /usr/share/keyrings/brave-browser-archive-keyring.gpg "$TRUST"
+pk --dry-run
+[[ "$rc" == 0 && -L "$TRUST" ]] && grep -q 'remove.*brave-browser-release.gpg' "$WORK/out"
+check "brave trust: dry-run reports the removal and keeps the symlink" $?
+rm -f -- "$TRUST"
+printf 'admin file\n' >"$TRUST"
+pk
+[[ "$rc" == 0 && -f "$TRUST" && ! -L "$TRUST" ]] && grep -q '\[warn\].*brave-browser-release.gpg' "$WORK/out"
+check "brave trust: a regular file there (not our symlink) is left alone with a warning" $?
 
 # --- Brave key fingerprint mismatch ----------------------------------------
 reset_state

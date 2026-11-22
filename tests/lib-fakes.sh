@@ -113,6 +113,13 @@ for a in "$@"; do
                   ;;
               esac
               echo "$a" >>"$FAKE_STATE/installed"
+              # brave-keyring's postinst links its key into trusted.gpg.d (global
+              # trust); installing brave-browser pulls brave-keyring in.
+              if [ "$a" = brave-browser ]; then
+                mkdir -p "${KCS_ROOT:-}/etc/apt/trusted.gpg.d"
+                ln -sf /usr/share/keyrings/brave-browser-archive-keyring.gpg \
+                  "${KCS_ROOT:-}/etc/apt/trusted.gpg.d/brave-browser-release.gpg"
+              fi
               ;;
           esac
         fi
