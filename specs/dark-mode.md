@@ -117,8 +117,14 @@ checked on the Kali VM are in `odd/verified-facts.md` section 3.
    every new kitty window in the live session after the final reboot. An empty
    `local.d` compiled by `dconf update` creates a db with no keys and no locks,
    so no setting changes; `dconf update` also recompiles the existing `ibus` db
-   from its unchanged `ibus.d` (the same thing the ibus postinst does). An
-   existing `local` db, or a profile that does not name it, is left alone.
+   from its unchanged `ibus.d` (the same thing the ibus postinst does), and
+   any other stale `*.d` db the same way. An existing `local` db, a profile
+   that does not name it, or a `local.d` that already holds files is left
+   alone (those files are their owner's settings and locks, not ours to
+   activate; a warning says `sudo dconf update` compiles them). The step runs
+   last in the module and is cosmetic: a failing `dconf update` only warns, so
+   it can never keep the GTK and Qt dark theme from being applied (a failing
+   `dconf-cli` install still fails the module, after the theme is applied).
    This lives here because this module is the one that relies on GSettings.
 
 ## Hardware detection
@@ -144,16 +150,19 @@ keys. A second run reports `total changes: 0` and no gsettings write, so
 - Restore `~/.config/qt5ct/qt5ct.conf` and `~/.config/qt6ct/qt6ct.conf` from
   their `.bak.<timestamp>` files, or delete them.
 - `sudo apt-get purge adw-gtk3-kali qt5ct qt6ct` if wanted.
-- `sudo rm -rf /etc/dconf/db/local /etc/dconf/db/local.d` (the warning in
-  GSettings readers comes back).
+- `sudo rm -f /etc/dconf/db/local`, and `sudo rmdir /etc/dconf/db/local.d`
+  only if it is still empty (the module created it empty; files there are
+  someone else's). The warning in GSettings readers comes back.
 
 ## Verification
 
 - `tests/test-dark-mode.sh` (fake apt, gsettings and dbus-run-session, temporary
   HOME and root): dry-run, fresh run, second run 0 changes, user keys kept,
   `/etc/environment` cases, the three bus variants, a daemon left by the private
-  bus, missing theme, failing apt, the dconf `local` db (built once, dry-run,
-  no profile, a profile without `system-db:local`, an existing db).
+  bus, missing theme, failing apt, the dconf `local` db (built once with
+  `dconf-cli`, dry-run, no profile, a profile without `system-db:local`, an
+  existing db, an existing empty `local.d`, a `local.d` with files, a failing
+  `dconf update`, a failing `dconf-cli` install after the theme is applied).
 - On a COSMIC session (VM): `gsettings get org.gnome.desktop.interface
   color-scheme` prints `'prefer-dark'` and `gtk-theme` prints `'adw-gtk3-dark'`;
   the session's `QT_QPA_PLATFORMTHEME` is `qt5ct`; a GTK3 app

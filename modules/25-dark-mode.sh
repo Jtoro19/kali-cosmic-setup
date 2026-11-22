@@ -75,7 +75,9 @@ _dark_mode_qt() {
 # so every GSettings reader (fastfetch in each new kitty, gsettings itself)
 # prints "unable to open file '/etc/dconf/db/local'". An empty local.d compiled
 # by `dconf update` creates the db with no keys: nothing is locked or changed.
-# An existing db (or a profile that does not name it) is left alone.
+# An existing db, a profile that does not name it, or a local.d that already
+# holds files (its owner's settings, not ours to activate) is left alone. The
+# step is cosmetic: a failing `dconf update` only warns.
 _dark_mode_dconf_db() {
   local profile db
   profile="$(rootpath /etc/dconf/profile/user)"
@@ -83,18 +85,26 @@ _dark_mode_dconf_db() {
 
   [[ -f "$profile" ]] && grep -qx 'system-db:local' "$profile" || return 0
   [[ -e "$db/local" ]] && return 0
+  if [[ -d "$db/local.d" && -n "$(find "$db/local.d" -mindepth 1 -print -quit 2>/dev/null)" ]]; then
+    log_warn "$db/local.d has files but $db/local was never built: leaving it to its owner (sudo dconf update compiles it)"
+    return 0
+  fi
 
   ensure_packages dconf-cli || return 1
   log_change "build the empty dconf system db $db/local that $profile names"
   [[ -d "$db/local.d" ]] || run_sudo install -d -m 0755 -- "$db/local.d"
-  run_sudo dconf update "$db"
-  if [[ "$DRY_RUN" != "1" && ! -e "$db/local" ]]; then
-    log_warn "dconf update did not create $db/local: GSettings readers keep warning about it"
+  if ! run_sudo_may_fail dconf update "$db"; then
+    log_warn "dconf update failed: GSettings readers keep warning about $db/local"
+    return 0
+  fi
+  if [[ "$DRY_RUN" != "1" && ! -r "$db/local" ]]; then
+    log_warn "dconf update did not create a readable $db/local: GSettings readers keep warning about it"
   fi
 }
 
 module_apply() {
-  _dark_mode_dconf_db || return 1
   _dark_mode_gtk || return 1
   _dark_mode_qt || return 1
+  # Last: a cosmetic step must never keep the dark theme from being applied.
+  _dark_mode_dconf_db || return 1
 }

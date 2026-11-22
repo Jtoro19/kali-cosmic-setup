@@ -224,6 +224,8 @@ dm
 check "a profile naming system-db:local with no db gets the empty db built (dconf update)" $?
 grep -q "dconf system db $DB/local" "$WORK/out"
 check "building the dconf db is reported as a change" $?
+grep -qx dconf-cli "$FAKE_STATE/installed"
+check "dconf-cli is installed when the db must be built" $?
 dm
 [[ "$rc" == 0 ]] && grep -q 'total changes: 0' "$WORK/out" && [[ ! -s "$FAKE_STATE/dconf.log" ]]
 check "dconf db: the second run calls no dconf and changes nothing" $?
@@ -252,6 +254,34 @@ mkdir -p "$DB/local.d" && printf 'existing\n' >"$DB/local"
 dm
 [[ "$rc" == 0 && "$(cat "$DB/local")" == existing && ! -s "$FAKE_STATE/dconf.log" ]]
 check "an existing dconf local db is left alone" $?
+
+reset_state
+profile user-db:user system-db:local
+mkdir -p "$DB/local.d"
+dm
+[[ "$rc" == 0 && -f "$DB/local" ]] && ! grep -q "install -d -m 0755 -- $DB/local.d" "$FAKE_STATE/sudo.log"
+check "an existing empty local.d is compiled without creating it again" $?
+
+reset_state
+profile user-db:user system-db:local
+mkdir -p "$DB/local.d" && printf '[org/gnome/desktop/interface]\nfont-name=x\n' >"$DB/local.d/00-admin"
+dm
+[[ "$rc" == 0 && ! -e "$DB/local" && ! -s "$FAKE_STATE/dconf.log" ]] && grep -q "local.d has files" "$WORK/out"
+check "a local.d with files but no db is left to its owner, with a warning" $?
+
+reset_state
+profile user-db:user system-db:local
+FAKE_DCONF_RC=1 dm
+[[ "$rc" == 0 && ! -e "$DB/local" ]] && grep -q "dconf update failed" "$WORK/out" &&
+  [[ "$(gsget color-scheme)" == "'prefer-dark'" ]]
+check "a failing dconf update only warns; the dark theme is still applied" $?
+
+reset_state
+profile user-db:user system-db:local
+printf '%s\n' papirus-icon-theme adw-gtk3-kali qt5ct qt6ct >"$FAKE_STATE/installed"
+FAKE_APT_RC=100 dm
+[[ "$rc" != 0 && "$(gsget color-scheme)" == "'prefer-dark'" && -f "$CFG/qt6ct/qt6ct.conf" ]]
+check "a dconf-cli install failure cannot stop the GTK and Qt dark theme (the db step runs last)" $?
 
 # --- failures -----------------------------------------------------------------
 reset_state

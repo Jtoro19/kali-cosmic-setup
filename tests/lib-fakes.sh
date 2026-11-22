@@ -499,10 +499,12 @@ EOS
 
   # dconf update <dbdir>: like the real one, compiles every <dbdir>/<name>.d
   # directory into the binary database <dbdir>/<name>. Every call is logged.
+  # FAKE_DCONF_RC=<n>: fail with that status and build nothing.
   cat >"$bin/dconf" <<'EOS'
 #!/bin/sh
 echo "dconf $*" >>"$FAKE_STATE/dconf.log"
 [ "$1" = update ] || exit 2
+[ -n "${FAKE_DCONF_RC:-}" ] && exit "$FAKE_DCONF_RC"
 dir="${2:-/etc/dconf/db}"
 for d in "$dir"/*.d; do
   [ -d "$d" ] || continue
