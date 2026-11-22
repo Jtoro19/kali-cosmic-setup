@@ -1,0 +1,6 @@
+[Unit]
+Description=Set kitty selection color from the COSMIC accent color
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/kitty-cosmic-colors.sh
