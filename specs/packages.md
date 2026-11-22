@@ -189,7 +189,12 @@ Decision: run them as X11 clients (XWayland) on a virtual display, defined by
 
 So it covers every hypervisor, and excludes bare metal and a VM with a
 passed-through GPU (the compositor may render on the real GPU there, where
-native Wayland works).
+native Wayland works). Edge cases, accepted because they only affect VMs and
+the flag is harmless there: a passed-through GPU on a platform bus with no PCI
+vendor file (for example on ARM) counts as virtual, and WSL2 (reported as a
+VM, usually no DRM card) gets the two files although COSMIC does not run
+there. An Intel GVT-g or SR-IOV virtual GPU has vendor 8086 and so does not
+get the workaround.
 
 - **Why it applies in every VM, not only where the crash was seen**: XWayland
   works in every VM, so the flag is harmless there, and the 3D settings (and
