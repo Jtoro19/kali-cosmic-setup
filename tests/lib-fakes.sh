@@ -497,6 +497,19 @@ case "$1" in
 esac
 EOS
 
+  # dconf update <dbdir>: like the real one, compiles every <dbdir>/<name>.d
+  # directory into the binary database <dbdir>/<name>. Every call is logged.
+  cat >"$bin/dconf" <<'EOS'
+#!/bin/sh
+echo "dconf $*" >>"$FAKE_STATE/dconf.log"
+[ "$1" = update ] || exit 2
+dir="${2:-/etc/dconf/db}"
+for d in "$dir"/*.d; do
+  [ -d "$d" ] || continue
+  printf 'fake-gvdb\n' >"${d%.d}"
+done
+EOS
+
   # dbus-run-session -- <cmd...>: a private session bus for one command (the
   # address is fake); FAKE_NO_DBUS_RUN=1 makes it fail like a missing program.
   cat >"$bin/dbus-run-session" <<'EOS'

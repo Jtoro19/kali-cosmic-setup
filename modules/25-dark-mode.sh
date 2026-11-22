@@ -70,7 +70,31 @@ _dark_mode_qt() {
   done
 }
 
+# _dark_mode_dconf_db: kali-defaults ships /etc/dconf/profile/user with
+# `system-db:local`, but nothing on a "default tools" install builds that db,
+# so every GSettings reader (fastfetch in each new kitty, gsettings itself)
+# prints "unable to open file '/etc/dconf/db/local'". An empty local.d compiled
+# by `dconf update` creates the db with no keys: nothing is locked or changed.
+# An existing db (or a profile that does not name it) is left alone.
+_dark_mode_dconf_db() {
+  local profile db
+  profile="$(rootpath /etc/dconf/profile/user)"
+  db="$(rootpath /etc/dconf/db)"
+
+  [[ -f "$profile" ]] && grep -qx 'system-db:local' "$profile" || return 0
+  [[ -e "$db/local" ]] && return 0
+
+  ensure_packages dconf-cli || return 1
+  log_change "build the empty dconf system db $db/local that $profile names"
+  [[ -d "$db/local.d" ]] || run_sudo install -d -m 0755 -- "$db/local.d"
+  run_sudo dconf update "$db"
+  if [[ "$DRY_RUN" != "1" && ! -e "$db/local" ]]; then
+    log_warn "dconf update did not create $db/local: GSettings readers keep warning about it"
+  fi
+}
+
 module_apply() {
+  _dark_mode_dconf_db || return 1
   _dark_mode_gtk || return 1
   _dark_mode_qt || return 1
 }

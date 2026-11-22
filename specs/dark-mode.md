@@ -38,6 +38,10 @@ checked on the Kali VM are in `odd/verified-facts.md` section 3.
   `icon_theme=Papirus-Dark`, `standard_dialogs=default`, `style=Fusion`. Other
   keys and sections that qt5ct/qt6ct write when their GUI opens (fonts, window
   geometry) are kept, so opening the GUI does not make the module report changes.
+- `/etc/dconf/db/local` (plus an empty `/etc/dconf/db/local.d`), only when
+  `/etc/dconf/profile/user` names `system-db:local` and the db does not exist:
+  built by `sudo dconf update /etc/dconf/db` (package `dconf-cli`). See
+  decision 7.
 - Backups `<file>.bak.<timestamp>` for every file that changes.
 - The `[Appearance]` keys are re-applied on every run: a key the user changed
   there (for example `style`) is put back to the shipped value, after a backup,
@@ -105,6 +109,17 @@ checked on the Kali VM are in `odd/verified-facts.md` section 3.
    with a fresh profile and no flag; Electron apps follow the same portal value
    or have their own theme setting (VS Code defaults to a dark theme).
 6. **No Flatpak.** The Flatpak runtime and override of eos are not ported.
+7. **Empty dconf `local` db.** `kali-defaults` ships `/etc/dconf/profile/user`
+   with `system-db:local`, but on a "default tools" install nothing builds that
+   db (VM: only `ibus` and `ibus.d` under `/etc/dconf/db`; no package owns a
+   `local.d`). Every GSettings reader then prints `dconf-WARNING ... unable to
+   open file '/etc/dconf/db/local'`, which showed up in the fastfetch output of
+   every new kitty window in the live session after the final reboot. An empty
+   `local.d` compiled by `dconf update` creates a db with no keys and no locks,
+   so no setting changes; `dconf update` also recompiles the existing `ibus` db
+   from its unchanged `ibus.d` (the same thing the ibus postinst does). An
+   existing `local` db, or a profile that does not name it, is left alone.
+   This lives here because this module is the one that relies on GSettings.
 
 ## Hardware detection
 
@@ -112,7 +127,8 @@ None.
 
 ## Idempotency check
 
-Every check is read-only: package presence, `gsettings get`, the exact line in
+Every check is read-only: the dconf profile line and the `local` db file,
+package presence, `gsettings get`, the exact line in
 `/etc/environment`, per-key match of the settings.ini and qt `[Appearance]`
 keys. A second run reports `total changes: 0` and no gsettings write, so
 `--dry-run` is accurate.
@@ -128,13 +144,16 @@ keys. A second run reports `total changes: 0` and no gsettings write, so
 - Restore `~/.config/qt5ct/qt5ct.conf` and `~/.config/qt6ct/qt6ct.conf` from
   their `.bak.<timestamp>` files, or delete them.
 - `sudo apt-get purge adw-gtk3-kali qt5ct qt6ct` if wanted.
+- `sudo rm -rf /etc/dconf/db/local /etc/dconf/db/local.d` (the warning in
+  GSettings readers comes back).
 
 ## Verification
 
 - `tests/test-dark-mode.sh` (fake apt, gsettings and dbus-run-session, temporary
   HOME and root): dry-run, fresh run, second run 0 changes, user keys kept,
   `/etc/environment` cases, the three bus variants, a daemon left by the private
-  bus, missing theme, failing apt.
+  bus, missing theme, failing apt, the dconf `local` db (built once, dry-run,
+  no profile, a profile without `system-db:local`, an existing db).
 - On a COSMIC session (VM): `gsettings get org.gnome.desktop.interface
   color-scheme` prints `'prefer-dark'` and `gtk-theme` prints `'adw-gtk3-dark'`;
   the session's `QT_QPA_PLATFORMTHEME` is `qt5ct`; a GTK3 app

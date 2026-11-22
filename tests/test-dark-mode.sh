@@ -211,6 +211,48 @@ check "symlink: a settings.ini linked into the home directory is edited through 
 [[ -L "$CFG/qt5ct/qt5ct.conf" && "$(cat "$WORK/outside/qt5ct.conf")" == $'[Appearance]\nstyle=Windows' ]] && grep -q '\[warn\].*symlink' "$WORK/out"
 check "symlink: a qt5ct.conf linked outside the home directory is skipped with a warning, the link is not replaced" $?
 
+# --- dconf system db named by the profile -----------------------------------------
+# kali-defaults ships /etc/dconf/profile/user with system-db:local but nothing
+# builds that db, so every GSettings reader (fastfetch in each kitty) warns.
+DB="$KCS_ROOT/etc/dconf/db"
+profile() { mkdir -p "$KCS_ROOT/etc/dconf/profile" && printf '%s\n' "$@" >"$KCS_ROOT/etc/dconf/profile/user"; }
+
+reset_state
+profile user-db:user system-db:local
+dm
+[[ "$rc" == 0 && -f "$DB/local" && -d "$DB/local.d" ]] && grep -qx "dconf update $DB" "$FAKE_STATE/dconf.log"
+check "a profile naming system-db:local with no db gets the empty db built (dconf update)" $?
+grep -q "dconf system db $DB/local" "$WORK/out"
+check "building the dconf db is reported as a change" $?
+dm
+[[ "$rc" == 0 ]] && grep -q 'total changes: 0' "$WORK/out" && [[ ! -s "$FAKE_STATE/dconf.log" ]]
+check "dconf db: the second run calls no dconf and changes nothing" $?
+
+reset_state
+profile user-db:user system-db:local
+dm --dry-run
+[[ "$rc" == 0 && ! -e "$DB/local" && ! -e "$DB/local.d" && ! -s "$FAKE_STATE/dconf.log" ]] &&
+  grep -q "would run: sudo dconf update $DB" "$WORK/out"
+check "dconf db: dry-run only reports the dconf update" $?
+
+reset_state
+dm
+[[ "$rc" == 0 && ! -e "$DB" && ! -s "$FAKE_STATE/dconf.log" ]]
+check "no dconf profile: no dconf db is built" $?
+
+reset_state
+profile user-db:user system-db:ibus
+dm
+[[ "$rc" == 0 && ! -e "$DB/local" && ! -s "$FAKE_STATE/dconf.log" ]]
+check "a profile without system-db:local: no dconf db is built" $?
+
+reset_state
+profile user-db:user system-db:local
+mkdir -p "$DB/local.d" && printf 'existing\n' >"$DB/local"
+dm
+[[ "$rc" == 0 && "$(cat "$DB/local")" == existing && ! -s "$FAKE_STATE/dconf.log" ]]
+check "an existing dconf local db is left alone" $?
+
 # --- failures -----------------------------------------------------------------
 reset_state
 FAKE_APT_RC=100 dm
