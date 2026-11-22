@@ -6,9 +6,12 @@ Per-module details go in `specs/<module>.md`.
 
 ## Testing workflow
 
-- No test machine is reachable from the development machine. The owner clones
-  the public repo on a Kali KVM virtual machine (virtio GPU) and runs
-  `./install.sh` there, then reports results.
+- Test VM (owner decision, 2026-11-22, replaces "the owner runs the tests"):
+  KVM domain `kali-cosmic-test` (virtio GPU with 3D acceleration), reached
+  over SSH with key authentication and passwordless sudo on the VM only.
+  Snapshot `fresh` is the clean install with SSH ready. Only this domain may
+  be managed, with `virsh -c qemu:///system` (snapshot-revert, start,
+  shutdown, screenshot) and without sudo on the development machine.
 - Test baseline (owner finding, 2026-11-22): a Kali "default tools" install,
   i.e. tasksel with no desktop selected but the default tool metapackages
   (`kali-linux-default`). It still ships `gdm3` 50.2 and `gnome-shell` 50.4,
@@ -18,8 +21,14 @@ Per-module details go in `specs/<module>.md`.
 - Locally, verification is limited to shellcheck, `tests/run-tests.sh` (fake
   sudo) and `--dry-run`. No real changes are applied on the development
   machine.
-- At each testable milestone: push, give the exact Kali commands and the checks
-  to report, then wait for the results.
+- Inner loop per module: rsync the working tree to the VM (no `.git`, no
+  gitignored files), run the module, read the installer log and journalctl,
+  fix and repeat until it passes. After reboots, check the greeter and the
+  desktop with `virsh screenshot` plus systemctl and journal checks.
+- Milestone check: push, revert the VM to `fresh`, `git clone` from GitHub on
+  the VM and run `install.sh` as a user would. The owner sees the result after
+  each module before the next one starts.
+- No secrets in the repo or logs; sshd on the VM is for testing only.
 - Repo: https://github.com/Jtoro19/kali-cosmic-setup (public, created by the
   owner), branch main.
 
