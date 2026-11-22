@@ -77,7 +77,8 @@ _dark_mode_qt() {
 # by `dconf update` creates the db with no keys: nothing is locked or changed.
 # An existing db, a profile that does not name it, or a local.d that already
 # holds files (its owner's settings, not ours to activate) is left alone. The
-# step is cosmetic: a failing `dconf update` only warns.
+# step is cosmetic: a failing `dconf update` only warns (a failing dconf-cli
+# install still fails the module, after the theme is applied).
 _dark_mode_dconf_db() {
   local profile db
   profile="$(rootpath /etc/dconf/profile/user)"

@@ -62,9 +62,11 @@ The four files shipped under `files/desktop/` are copied from upstream
    `pipewire-pulse`, `pipewire-alsa`, `wireplumber`, `libspa-0.2-bluetooth`,
    `bluez`, `network-manager`, `power-profiles-daemon`, `gnome-keyring`,
    `libpam-gnome-keyring`, `dbus-user-session`, `polkitd`,
-   `xdg-desktop-portal`, `xdg-user-dirs`, `accountsservice`, `upower`,
-   `kali-defaults-desktop`. No cups, avahi, firewalld, packagekit, flatpak or
-   sshd.
+   `xdg-desktop-portal`, `xdg-user-dirs`, `accountsservice`, `upower`.
+   No cups, avahi, firewalld, packagekit, flatpak or sshd. After the COSMIC
+   package (step 8) it installs `kali-defaults-desktop`, outside the first-run
+   check of step 1, so a machine provisioned before it was added gets it
+   without another full upgrade.
 8. Installs `cosmic-epoch-monorepo` with `--no-install-recommends` (its
    Recommends pull flatpak, packagekit, appstream and apt-config-icons, which
    this repo drops). `cosmic-utils-monorepo` is not installed.
@@ -261,10 +263,11 @@ harmless while the default target is `multi-user.target`.
    debconf-set-selections`, `echo /usr/sbin/gdm3 | sudo tee
    /etc/X11/default-display-manager` and `sudo ln -sf
    /lib/systemd/system/gdm3.service /etc/systemd/system/display-manager.service`.
-4. `sudo apt-get purge cosmic-epoch-monorepo` and, if no other Kali desktop
-   needs it, `kali-defaults-desktop` (its postrm restores the diverted browser
-   files) (review what `apt-get autoremove`
-   would remove before running it).
+4. `sudo apt-get purge cosmic-epoch-monorepo`. If no other Kali desktop
+   needs it, also `sudo apt-get purge kali-defaults-desktop`: its postrm
+   restores the diverted browser files, and the browsers go back to upstream
+   defaults. Review what `apt-get autoremove` would remove before running
+   it.
 5. Remove `/etc/apt/sources.list.d/debian-cosmic.sources`,
    `/etc/apt/preferences.d/debian-cosmic` and
    `/etc/apt/keyrings/debian-cosmic.gpg`, then `sudo apt-get update`.

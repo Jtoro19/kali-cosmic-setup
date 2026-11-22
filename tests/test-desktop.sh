@@ -125,11 +125,13 @@ base_line="$(grep 'greetd' "$APT" | head -n1)"
 missing_base=""
 for p in greetd xwayland pipewire pipewire-pulse pipewire-alsa wireplumber libspa-0.2-bluetooth \
   bluez network-manager power-profiles-daemon gnome-keyring libpam-gnome-keyring \
-  dbus-user-session polkitd xdg-desktop-portal xdg-user-dirs accountsservice upower kali-defaults-desktop; do
+  dbus-user-session polkitd xdg-desktop-portal xdg-user-dirs accountsservice upower; do
   [[ "$base_line" == *" $p"* ]] || missing_base="$missing_base $p"
 done
 [[ -z "$missing_base" ]]
 check "the session base packages are installed (missing:${missing_base:- none})" $?
+grep -qx kali-defaults-desktop "$FAKE_STATE/installed"
+check "kali-defaults-desktop (Kali's browser settings) is installed" $?
 ! grep -Eq 'cups|avahi|firewalld|packagekit|flatpak|openssh' "$APT"
 check "no cups, avahi, firewalld, packagekit, flatpak or sshd" $?
 [[ -s "$FAKE_STATE/sysusers.log" ]] && grep -qx 'cosmic-greeter.conf' "$FAKE_STATE/sysusers.log" &&
@@ -196,6 +198,14 @@ check "second run: no apt-get, no download, no sysusers, no tmpfiles" $?
 check "second run: no enable, disable, set-default or daemon-reload" $?
 ! compgen -G "$KCS_ROOT/etc/*/*.bak.*" >/dev/null
 check "second run: no backup files" $?
+
+# --- an install made before kali-defaults-desktop was added ------------------
+# Kali's desktop settings package is installed after the first-run gate, so an
+# already provisioned machine gets it without a surprise full-upgrade.
+sed -i '/^kali-defaults-desktop$/d' "$FAKE_STATE/installed"
+desk
+[[ "$rc" == 0 ]] && grep -qx kali-defaults-desktop "$FAKE_STATE/installed" && ! grep -q 'full-upgrade' "$APT"
+check "a provisioned install missing only kali-defaults-desktop gets it without a full-upgrade" $?
 desk --dry-run
 grep -q 'Nothing to change' "$WORK/out"
 check "dry-run after a real run says Nothing to change" $?

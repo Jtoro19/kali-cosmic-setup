@@ -41,13 +41,16 @@ _DESKTOP_BASE=(
   xdg-user-dirs
   accountsservice
   upower
-  # Kali's settings for graphical desktops, which every Kali desktop install
-  # pulls in through kali-desktop-core: the Firefox ESR policies, bookmarks and
-  # homepage, Chromium's master_preferences and bookmarks, fallback fonts. A
-  # "default tools" install without a desktop lacks it, so the browsers would
-  # start with upstream defaults instead of Kali's.
-  kali-defaults-desktop
 )
+
+# Kali's settings for graphical desktops, which every Kali desktop install
+# pulls in through kali-desktop-core: the Firefox ESR policies, bookmarks and
+# homepage, Chromium's master_preferences and bookmarks, fallback fonts. A
+# "default tools" install without a desktop lacks it, so the browsers would
+# start with upstream defaults instead of Kali's. Kept out of the first-run
+# gate so a machine provisioned before it was added gets it without a full
+# upgrade.
+_DESKTOP_KALI_SETTINGS=(kali-defaults-desktop)
 
 # Other display managers to turn off so Debian's greetd.service owns
 # display-manager.service (greetd itself is the one we keep).
@@ -336,6 +339,7 @@ module_apply() {
   # The meta package's Recommends (flatpak, packagekit, appstream,
   # apt-config-icons) are deliberately not installed.
   ensure_packages --no-install-recommends "$_DESKTOP_META" || return 1
+  ensure_packages "${_DESKTOP_KALI_SETTINGS[@]}" || return 1
 
   _desktop_greeter_user || return 1
   _desktop_files || return 1
