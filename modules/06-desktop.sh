@@ -177,6 +177,27 @@ _desktop_debconf_dm() {
     awk '/shared\/default-x-display-manager:/ { sub(/^.*: */, ""); print; exit }'
 }
 
+# _desktop_link_greetd: make display-manager.service link to greetd.service,
+# like Debian's postinst (`ln -sf`), only when it does not resolve there yet.
+# Never touches a link masked to /dev/null: fails instead. Sets
+# _DESKTOP_LINK_CHANGED to 1 when it linked (or would, in dry-run), else 0.
+_DESKTOP_LINK_CHANGED=0
+_desktop_link_greetd() {
+  local dm_link
+  dm_link="$(rootpath /etc/systemd/system/display-manager.service)"
+  _DESKTOP_LINK_CHANGED=0
+  if [[ "$(readlink -- "$dm_link" 2>/dev/null)" == /dev/null ]]; then
+    log_error "display-manager.service is masked (links to /dev/null); not unmasking it. Unmask it yourself if that is intended, then run the installer again"
+    return 1
+  fi
+  if ! _desktop_dm_is_greetd; then
+    log_change "link display-manager.service to greetd.service"
+    _priv_run "$dm_link" mkdir -p -- "$(dirname "$dm_link")" || return 1
+    _priv_run "$dm_link" ln -sfn -- /lib/systemd/system/greetd.service "$dm_link" || return 1
+    _DESKTOP_LINK_CHANGED=1
+  fi
+}
+
 # _desktop_display_manager: make Debian's greetd.service the display manager,
 # the same three things its postinst does: the debconf answer, the
 # /etc/X11/default-display-manager file and the display-manager.service link.
@@ -184,13 +205,7 @@ _desktop_debconf_dm() {
 # module never disables or masks any getty unit; greetd runs on VT7 and
 # conflicts only with getty@tty7, so getty@tty1 stays free for recovery.
 _desktop_display_manager() {
-  local dm_link s link_changed=0
-  dm_link="$(rootpath /etc/systemd/system/display-manager.service)"
-
-  if [[ "$(readlink -- "$dm_link" 2>/dev/null)" == /dev/null ]]; then
-    log_error "display-manager.service is masked (links to /dev/null); not unmasking it. Unmask it yourself if that is intended, then run the installer again"
-    return 1
-  fi
+  local s link_changed=0
 
   if ! systemctl is-enabled --quiet cosmic-greeter-daemon.service >/dev/null 2>&1; then
     log_change "enable cosmic-greeter-daemon.service"
@@ -204,18 +219,18 @@ _desktop_display_manager() {
 
   ensure_file_content "$(rootpath /etc/X11/default-display-manager)" /usr/sbin/greetd || return 1
 
-  if ! _desktop_dm_is_greetd; then
-    log_change "link display-manager.service to greetd.service"
-    _priv_run "$dm_link" mkdir -p -- "$(dirname "$dm_link")" || return 1
-    _priv_run "$dm_link" ln -sfn -- /lib/systemd/system/greetd.service "$dm_link" || return 1
-    link_changed=1
-  fi
+  _desktop_link_greetd || return 1
+  ((_DESKTOP_LINK_CHANGED)) && link_changed=1
   if [[ "$DRY_RUN" != "1" ]]; then
     _desktop_verify_dm || return 1
   fi
 
-  # Disabling another display manager only removes links that point at its own
-  # unit, so it cannot drop the greetd link made above.
+  # `systemctl disable` also processes the unit's [Install] Alias=: gdm3 and the
+  # old cosmic-greeter.service both declare Alias=display-manager.service, so
+  # on some systemd versions disabling them deletes display-manager.service
+  # even though it now points at greetd. Hence the link is ensured and verified
+  # again afterwards. The old unit is only touched after the first verified
+  # link, so an earlier failure never leaves the machine without one.
   for s in "${_DESKTOP_OTHER_DM[@]}"; do
     if systemctl is-enabled --quiet "$s.service" >/dev/null 2>&1; then
       log_change "disable $s.service"
@@ -225,6 +240,12 @@ _desktop_display_manager() {
 
   _desktop_migrate_old_unit || return 1
 
+  # Dry-run never creates the link, so the second pass would only repeat it.
+  if [[ "$DRY_RUN" != "1" ]]; then
+    _desktop_link_greetd || return 1
+    ((_DESKTOP_LINK_CHANGED)) && link_changed=1
+    _desktop_verify_dm || return 1
+  fi
   if ((link_changed)); then
     log_warn "reboot to reach the COSMIC login"
   fi

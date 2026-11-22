@@ -194,6 +194,10 @@ case "$cmd" in
       grep -vx -- "$u" "$FAKE_STATE/enabled" >"$FAKE_STATE/enabled.new" 2>/dev/null
       mv -- "$FAKE_STATE/enabled.new" "$FAKE_STATE/enabled"
       if [ "$(readlink "$dm" 2>/dev/null)" = "$u" ]; then rm -f -- "$dm"; fi
+      # FAKE_DISABLE_DROPS_ALIAS="gdm3.service cosmic-greeter.service": disabling
+      # these also deletes display-manager.service, like systemd processing the
+      # unit's [Install] Alias=display-manager.service, whatever it points to.
+      case " ${FAKE_DISABLE_DROPS_ALIAS:-} " in *" $u "*) rm -f -- "$dm" ;; esac
     done
     ;;
   *) exit 0 ;;
@@ -251,6 +255,11 @@ EOS
 #!/bin/sh
 echo "ln $*" >>"$FAKE_STATE/all.log"
 [ -n "${FAKE_NO_LN:-}" ] && exit 0
+# FAKE_LN_NOOP_NTH=2: only the 2nd ln call of a run does nothing.
+if [ -n "${FAKE_LN_NOOP_NTH:-}" ]; then
+  echo x >>"$FAKE_STATE/ln.count"
+  [ "$(wc -l <"$FAKE_STATE/ln.count")" -eq "$FAKE_LN_NOOP_NTH" ] && exit 0
+fi
 exec /usr/bin/ln "$@"
 EOS
 

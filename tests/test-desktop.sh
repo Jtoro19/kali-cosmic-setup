@@ -162,6 +162,12 @@ check "display-manager.service links to /lib/systemd/system/greetd.service" $?
 check "no gdm3 or gnome-shell installed: apt-get log has no purge, simulation or autoremove" $?
 [[ ! -e "$FAKE_STATE/sudo.log" ]] || ! grep -q 'debconf-show' "$FAKE_STATE/sudo.log"
 check "the debconf read never goes through the sudo binary under KCS_SKIP_SUDO" $?
+# Positive control: without KCS_SKIP_SUDO the same read does call sudo, so the
+# absence above is meaningful.
+rm -f -- "$FAKE_STATE/sudo.log"
+PATH="$WORK/bin:$PATH" KCS_SKIP_SUDO=0 bash -c 'source "$1/lib/common.sh"; sudo_read debconf-show greetd' _ "$REPO_ROOT" >/dev/null
+grep -q 'debconf-show greetd' "$FAKE_STATE/sudo.log" 2>/dev/null
+check "positive control: sudo_read calls sudo when KCS_SKIP_SUDO is not set" $?
 grep -qx 'set-default graphical.target' "$SYSLOG"
 check "the default target is graphical.target" $?
 ! grep -qi 'getty' "$SYSLOG" && ! grep -qw 'mask' "$SYSLOG"
@@ -208,6 +214,13 @@ grep -q '^daemon-reload' "$SYSLOG" &&
   cmp -s "$REPO_ROOT/files/desktop/greetd-cosmic.conf" "$SYSD/greetd.service.d/cosmic-greeter.conf" &&
   compgen -G "$SYSD/greetd.service.d/cosmic-greeter.conf.bak.*" >/dev/null
 check "a changed drop-in is backed up, replaced and followed by daemon-reload" $?
+
+# --- apt refresh after the repo changed ---------------------------------------
+reset_state
+FAKE_APT_FAIL_UPDATE_NTH=2 desk
+[[ "$rc" != 0 ]] && grep -q "module 'desktop' failed" "$WORK/out" &&
+  [[ "$(wc -l <"$FAKE_STATE/update.count")" == 2 ]] && ! grep -q 'cosmic-epoch-monorepo' "$FAKE_STATE/apt.log"
+check "a failing apt-get update after the repo changed (force refresh) fails the module" $?
 
 # --- display manager switching ----------------------------------------------
 reset_state
@@ -277,6 +290,40 @@ grep -qx 'disable cosmic-greeter.service' "$SYSLOG" && grep -q '^daemon-reload' 
 check "the old unit is disabled first and systemd reloaded" $?
 [[ "$(readlink -f "$SYSD/display-manager.service")" == */greetd.service ]]
 check "after the migration display-manager.service resolves to greetd.service" $?
+
+# --- disabling a display manager can delete the alias link ---------------------
+# Real `systemctl disable` follows the unit's Alias=display-manager.service, so
+# the greetd link made earlier may be gone afterwards: it is made again.
+reset_state
+printf '%s\n' gdm3.service >"$FAKE_STATE/enabled"
+mkdir -p "$SYSD" && ln -sfn /lib/systemd/system/gdm3.service "$SYSD/display-manager.service"
+FAKE_DISABLE_DROPS_ALIAS="gdm3.service" desk
+[[ "$rc" == 0 && "$(readlink "$SYSD/display-manager.service")" == /lib/systemd/system/greetd.service ]]
+check "gdm3 disable deletes the alias: the greetd link is made again and the run succeeds" $?
+[[ "$(grep -c '^ln ' "$FAKE_STATE/all.log")" == 2 ]]
+check "the link was made twice (before and after the disables)" $?
+reset_state
+mkdir -p "$SYSD"
+printf '[Unit]\nDescription=old\n' >"$SYSD/cosmic-greeter.service"
+ln -sfn cosmic-greeter.service "$SYSD/display-manager.service"
+echo cosmic-greeter.service >"$FAKE_STATE/enabled"
+FAKE_DISABLE_DROPS_ALIAS="cosmic-greeter.service" desk
+[[ "$rc" == 0 && "$(readlink "$SYSD/display-manager.service")" == /lib/systemd/system/greetd.service &&
+  ! -e "$SYSD/cosmic-greeter.service" ]]
+check "old unit disable deletes the alias: the greetd link is made again and the old unit is gone" $?
+reset_state
+printf '%s\n' gdm3.service >"$FAKE_STATE/enabled"
+mkdir -p "$SYSD" && ln -sfn /lib/systemd/system/gdm3.service "$SYSD/display-manager.service"
+FAKE_DISABLE_DROPS_ALIAS="gdm3.service" FAKE_LN_NOOP_NTH=2 desk
+[[ "$rc" != 0 ]] && grep -q 'display-manager.service is missing' "$WORK/out"
+check "a relink that cannot be made after the disables fails loudly" $?
+reset_state
+printf '%s\n' gdm3 gnome-shell >"$FAKE_STATE/installed"
+printf '%s\n' gdm3.service >"$FAKE_STATE/enabled"
+mkdir -p "$SYSD" && ln -sfn /lib/systemd/system/gdm3.service "$SYSD/display-manager.service"
+FAKE_DISABLE_DROPS_ALIAS="gdm3.service" FAKE_LN_NOOP_NTH=2 desk
+[[ "$rc" != 0 && ! -e "$FAKE_STATE/purge-state.log" ]]
+check "no purge when the link is lost and cannot be restored" $?
 
 # --- GDM purge --------------------------------------------------------------
 # gdm_system: an up-to-date Kali "default tools" system with gdm3 and gnome-shell.
@@ -441,11 +488,6 @@ mkdir -p "$SYSD" && ln -sfn /lib/systemd/system/other-dm.service "$SYSD/display-
 FAKE_NO_LN=1 desk
 [[ "$rc" != 0 ]] && grep -q 'display-manager.service points to .*other-dm.service' "$WORK/out"
 check "a link that stays elsewhere: the message shows where it points" $?
-reset_state
-FAKE_APT_FAIL_UPDATE_NTH=2 desk
-[[ "$rc" != 0 ]] && grep -q "module 'desktop' failed" "$WORK/out" &&
-  [[ "$(wc -l <"$FAKE_STATE/update.count")" == 2 ]] && ! grep -q 'cosmic-epoch-monorepo' "$FAKE_STATE/apt.log"
-check "a failing apt-get update after the repo changed (force refresh) fails the module" $?
 gdm_system
 FAKE_NO_LN=1 desk
 [[ "$rc" != 0 && ! -e "$FAKE_STATE/purge-state.log" ]]

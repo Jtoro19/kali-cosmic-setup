@@ -93,7 +93,11 @@ The four files shipped under `files/desktop/` are copied from upstream
        backup) the `cosmic-greeter.service` of an earlier version of this
        module and reloads systemd. The old unit is removed only after the
        greetd link is verified, so a failure never leaves no
-       display-manager link.
+       display-manager link;
+    7. because `systemctl disable` processes the units' `Alias=
+       display-manager.service` and may delete the link, the link is ensured
+       again (same idempotent `ln`, still failing on a masked link) and
+       verified a second time.
     `getty@` units are never disabled or masked.
 11. Sets `graphical.target` as the default boot target when it is not.
 12. GDM purge (below), only after step 10 succeeded and was verified.
