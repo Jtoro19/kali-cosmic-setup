@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# cosmic-audio-resync: make the COSMIC sound applet see the audio devices again.
+#
+# Works around pop-os/cosmic-settings-daemon#193: after login (or after the
+# audio stack restarts) cosmic-settings-daemon does not pick up the PipeWire
+# devices, so the panel applet and Settings > Sound show "No device selected"
+# and their volume sliders do nothing, while PipeWire itself works.
+# Restarting the daemon and then the panel resyncs them.
+#
+# Run at login by ~/.config/autostart/cosmic-audio-resync.desktop. Run it by
+# hand (with RESYNC_DELAY=0) after restarting PipeWire.
+set -u
+
+delay="${RESYNC_DELAY:-5}"
+daemon="cosmic-settings-daemon"
+
+log() { printf 'cosmic-audio-resync: %s\n' "$*" >&2; }
+
+if ! command -v "$daemon" >/dev/null 2>&1; then
+  log "$daemon not found; nothing to do"
+  exit 0
+fi
+
+# Give the session time to start PipeWire and the daemon first.
+sleep "$delay"
+
+# The process name is longer than 15 characters, so match the command line.
+pkill -u "$(id -u)" -f "^(/usr/bin/)?$daemon( |$)" || true
+sleep 2
+
+# Start it again only if the session did not already respawn it.
+if ! pgrep -u "$(id -u)" -f "^(/usr/bin/)?$daemon( |$)" >/dev/null 2>&1; then
+  setsid -f "$daemon" >/dev/null 2>&1 </dev/null
+  sleep 2
+fi
+
+# cosmic-session respawns the panel together with its applets. Killing only
+# the sound applet is not enough: the panel does not bring it back.
+pkill -u "$(id -u)" -x cosmic-panel || true
+exit 0

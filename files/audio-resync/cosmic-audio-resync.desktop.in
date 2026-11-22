@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=COSMIC audio resync
+Comment=Restart cosmic-settings-daemon so the sound applet sees the audio devices (kali-cosmic-setup)
+Exec=@HOME@/.local/bin/cosmic-audio-resync
+NoDisplay=true
+X-GNOME-Autostart-enabled=true
