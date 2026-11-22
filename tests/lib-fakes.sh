@@ -109,6 +109,70 @@ case "$mode" in
 esac
 EOS
 
+  # systemctl: state in $FAKE_STATE (enabled = enabled units, default = boot
+  # target). Every call is logged to systemctl.log. `enable` and `disable`
+  # keep $KCS_ROOT/etc/systemd/system/display-manager.service in step like the
+  # Alias=display-manager.service of a real display manager unit.
+  cat >"$bin/systemctl" <<'EOS'
+#!/bin/sh
+echo "$*" >>"$FAKE_STATE/systemctl.log"
+sysd="${KCS_ROOT:-}/etc/systemd/system"
+dm="$sysd/display-manager.service"
+cmd="$1"
+shift
+case "$cmd" in
+  is-enabled)
+    for a in "$@"; do unit="$a"; done
+    grep -qx -- "$unit" "$FAKE_STATE/enabled" 2>/dev/null
+    ;;
+  get-default)
+    cat "$FAKE_STATE/default" 2>/dev/null || echo multi-user.target
+    ;;
+  set-default) echo "$1" >"$FAKE_STATE/default" ;;
+  daemon-reload) ;;
+  enable)
+    for u in "$@"; do
+      case "$u" in -*) continue ;; esac
+      echo "$u" >>"$FAKE_STATE/enabled"
+      case "$u" in
+        cosmic-greeter.service | greetd.service | gdm3.service | lightdm.service | sddm.service)
+          mkdir -p "$sysd"
+          ln -sfn "$u" "$dm"
+          ;;
+      esac
+    done
+    ;;
+  disable)
+    for u in "$@"; do
+      case "$u" in -*) continue ;; esac
+      grep -vx -- "$u" "$FAKE_STATE/enabled" >"$FAKE_STATE/enabled.new" 2>/dev/null
+      mv -- "$FAKE_STATE/enabled.new" "$FAKE_STATE/enabled"
+      if [ "$(readlink "$dm" 2>/dev/null)" = "$u" ]; then rm -f -- "$dm"; fi
+    done
+    ;;
+  *) exit 0 ;;
+esac
+EOS
+
+  # getent passwd <name>: users listed in $FAKE_STATE/users exist.
+  cat >"$bin/getent" <<'EOS'
+#!/bin/sh
+[ "$1" = passwd ] && grep -qx -- "$2" "$FAKE_STATE/users" 2>/dev/null
+EOS
+
+  # systemd-sysusers / systemd-tmpfiles: log the call; sysusers creates the
+  # cosmic-greeter user in the fake user list.
+  cat >"$bin/systemd-sysusers" <<'EOS'
+#!/bin/sh
+echo "$*" >>"$FAKE_STATE/sysusers.log"
+echo cosmic-greeter >>"$FAKE_STATE/users"
+EOS
+  cat >"$bin/systemd-tmpfiles" <<'EOS'
+#!/bin/sh
+echo "$*" >>"$FAKE_STATE/tmpfiles.log"
+mkdir -p "${KCS_ROOT:-}/var/lib/cosmic-greeter"
+EOS
+
   chmod +x "$bin"/*
 }
 

@@ -1,0 +1,14 @@
+# Source: pop-os/cosmic-greeter, tag epoch-1.11.0 (cosmic-greeter-daemon.service).
+# Changes: none. The Debian package does not ship this unit, so
+# kali-cosmic-setup installs it.
+[Unit]
+Description=COSMIC Greeter Daemon
+
+[Service]
+Type=dbus
+BusName=com.system76.CosmicGreeter
+ExecStart=/usr/bin/cosmic-greeter-daemon
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
