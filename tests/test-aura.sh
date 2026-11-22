@@ -20,11 +20,12 @@ make_fakes "$WORK/bin"
 HOME_DIR="$WORK/home"
 BINDIR="$HOME_DIR/.local/bin"
 SHARE="$HOME_DIR/.local/share"
+ACT="$SHARE/icons/hicolor/scalable/actions"
 CFG="$HOME_DIR/.config/cosmic"
 SC="$CFG/com.system76.CosmicSettings.Shortcuts/v1/custom"
 UNIT="$HOME_DIR/.config/systemd/user/aura-restore.service"
 MARKER="$WORK/state-home/kali-cosmic-setup/aura/version"
-VER=v1.5.0
+VER=v1.11.2
 TGZ="aura-$VER-x86_64-linux.tar.gz"
 URL="https://github.com/antwny/aura/releases/download/$VER/$TGZ"
 DIR="aura-$VER-x86_64-linux"
@@ -50,7 +51,20 @@ mk_release() {
   echo '<svg/>' >"$WORK/pkg/$DIR/io.github.antwny.aura.svg"
   echo '<component/>' >"$WORK/pkg/$DIR/io.github.antwny.aura.metainfo.xml"
   printf '[Desktop Entry]\nName=Aura\nTryExec=aura\nExec=aura\nIcon=io.github.antwny.aura\n' >"$WORK/pkg/$DIR/io.github.antwny.aura.desktop"
+  printf '#!/bin/sh\necho effects\n' >"$WORK/pkg/$DIR/aura-effects"
+  printf '#!/bin/sh\necho depth\n' >"$WORK/pkg/$DIR/aura-depth"
+  chmod +x "$WORK/pkg/$DIR/aura-effects" "$WORK/pkg/$DIR/aura-depth"
+  for f in navbar-open-symbolic.svg navbar-closed-symbolic.svg fire-symbolic.svg; do
+    echo "<svg id=\"$f\"/>" >"$WORK/pkg/$DIR/$f"
+  done
   echo '#!/bin/sh' >"$WORK/pkg/$DIR/install.sh"
+  tar -czf "$FAKE_STATE/curl-files/$TGZ" -C "$WORK/pkg" "$DIR"
+  AURA_SHA256="$(sha256sum "$FAKE_STATE/curl-files/$TGZ" | awk '{ print $1 }')"
+  export AURA_SHA256
+}
+
+# repack: rebuild the tarball from $WORK/pkg and point AURA_SHA256 at it.
+repack() {
   tar -czf "$FAKE_STATE/curl-files/$TGZ" -C "$WORK/pkg" "$DIR"
   AURA_SHA256="$(sha256sum "$FAKE_STATE/curl-files/$TGZ" | awk '{ print $1 }')"
   export AURA_SHA256
@@ -112,11 +126,20 @@ check "download: only the pinned https release URL, https enforced" $?
 check "install: aura and mpvpaper are in ~/.local/bin (0755), like the upstream user install" $?
 [[ -f "$SHARE/icons/hicolor/scalable/apps/io.github.antwny.aura.svg" && -f "$SHARE/metainfo/io.github.antwny.aura.metainfo.xml" ]]
 check "install: icon and metainfo are in ~/.local/share" $?
+[[ -x "$BINDIR/aura-effects" && -x "$BINDIR/aura-depth" && "$(stat -c %a "$BINDIR/aura-effects")" == 755 && "$(stat -c %a "$BINDIR/aura-depth")" == 755 ]] &&
+  "$BINDIR/aura-effects" | grep -q effects
+check "install: aura-effects and aura-depth are in ~/.local/bin (0755)" $?
+[[ "$(stat -c %a "$ACT/navbar-open-symbolic.svg")" == 644 && -f "$ACT/navbar-closed-symbolic.svg" && -f "$ACT/fire-symbolic.svg" ]]
+check "install: navbar-open/closed and fire symbolic icons are in hicolor/scalable/actions (0644)" $?
+[[ ! -e "$HOME_DIR/.config/environment.d/50-aura.conf" ]] && ! find "$HOME_DIR" -maxdepth 1 -name '.*rc' | grep -q .
+check "install: no environment.d file and no shell rc edit (COSMIC only)" $?
 D="$SHARE/applications/io.github.antwny.aura.desktop"
 grep -qx "Exec=$BINDIR/aura" "$D" && grep -qx "TryExec=$BINDIR/aura" "$D" && [[ "$(grep -c '^TryExec=' "$D")" == 1 ]]
 check "install: the desktop entry gets an absolute Exec and a single TryExec" $?
 [[ "$(sed -n 1p "$MARKER")" == "$VER" && "$(sed -n 2p "$MARKER")" == mpvpaper=bundled ]]
 check "marker: the installed version is recorded" $?
+[[ "$(sed -n 3p "$MARKER")" == "optional=aura-effects aura-depth fire-symbolic.svg" ]]
+check "marker: the optional members the release shipped are recorded" $?
 cmp -s "$REPO_ROOT/files/aura/aura-restore" "$BINDIR/aura-restore" && cmp -s "$REPO_ROOT/files/aura/aura-restore.service" "$UNIT" && [[ -x "$BINDIR/aura-restore" ]]
 check "restore: script and user unit are installed" $?
 grep -qx 'aura-restore.service' "$FAKE_STATE/user-enabled"
@@ -370,8 +393,73 @@ AURA_SHA256="$(sha256sum "$FAKE_STATE/curl-files/$TGZ" | awk '{ print $1 }')" au
 [[ "$rc" == 0 ]] && grep -q 'total changes: 0' "$WORK/out" && [[ ! -s "$FAKE_STATE/curl.log" ]]
 check "a tarball without mpvpaper: the second run changes nothing and downloads nothing" $?
 
+# Optional members absent from the tarball are not required and not downloaded again.
+reset_state
+rm -f -- "$WORK/pkg/$DIR/aura-effects" "$WORK/pkg/$DIR/aura-depth" "$WORK/pkg/$DIR/fire-symbolic.svg"
+repack
+au
+[[ "$rc" == 0 && -x "$BINDIR/aura" && ! -e "$BINDIR/aura-effects" && ! -e "$BINDIR/aura-depth" && ! -e "$ACT/fire-symbolic.svg" && -f "$ACT/navbar-open-symbolic.svg" && "$(sed -n 3p "$MARKER")" == "optional=" ]]
+check "optional members absent from the tarball: installs, they are not required" $?
+au
+[[ "$rc" == 0 ]] && grep -q 'total changes: 0' "$WORK/out" && [[ ! -s "$FAKE_STATE/curl.log" ]]
+check "optional members absent: the second run changes nothing and downloads nothing" $?
+# A required navbar icon missing from the tarball is a layout error.
+for req in navbar-open-symbolic.svg navbar-closed-symbolic.svg; do
+  reset_state
+  rm -f -- "$WORK/pkg/$DIR/$req"
+  repack
+  au
+  [[ "$rc" != 0 && ! -e "$BINDIR/aura" && ! -e "$MARKER" ]] && grep -q 'layout' "$WORK/out"
+  check "a tarball without $req is rejected (layout), nothing installed" $?
+done
+# A symlinked member (new ones included) is refused, nothing installed.
+for sl in aura-effects aura-depth navbar-open-symbolic.svg navbar-closed-symbolic.svg fire-symbolic.svg; do
+  reset_state
+  rm -f -- "$WORK/pkg/$DIR/$sl"
+  ln -s /bin/true "$WORK/pkg/$DIR/$sl"
+  repack
+  au
+  [[ "$rc" != 0 && ! -e "$BINDIR/aura" && ! -e "$BINDIR/aura-effects" && ! -e "$ACT/navbar-open-symbolic.svg" && ! -e "$MARKER" ]]
+  check "a symlinked $sl in the tarball is rejected, nothing installed" $?
+done
+# Upgrade from a v1.5.0 install (two-line marker, no new files): the module upgrades.
+reset_state
+au
+rm -f -- "$BINDIR/aura-effects" "$BINDIR/aura-depth" "$ACT"/*.svg
+printf 'v1.5.0\nmpvpaper=bundled\n' >"$MARKER"
+au
+[[ "$rc" == 0 && "$(sed -n 1p "$MARKER")" == "$VER" && -x "$BINDIR/aura-effects" && -x "$BINDIR/aura-depth" && -f "$ACT/navbar-open-symbolic.svg" && -f "$ACT/fire-symbolic.svg" ]] && grep -qx "$URL" "$FAKE_STATE/curl.log"
+check "upgrade from a v1.5.0 marker: reinstalls and adds the new files" $?
+au
+grep -q 'total changes: 0' "$WORK/out" && [[ ! -s "$FAKE_STATE/curl.log" ]]
+check "upgrade from v1.5.0: the second run changes nothing" $?
+# Stale hicolor PNGs of the Aura icon are removed (only that exact name pattern).
+reset_state
+for sz in 48x48 256x256; do
+  mkdir -p "$SHARE/icons/hicolor/$sz/apps"
+  echo png >"$SHARE/icons/hicolor/$sz/apps/io.github.antwny.aura.png"
+  echo png >"$SHARE/icons/hicolor/$sz/apps/other.png"
+done
+echo png >"$SHARE/icons/hicolor/48x48/apps/io.github.antwny.aura.png.keep"
+au
+[[ "$rc" == 0 && ! -e "$SHARE/icons/hicolor/48x48/apps/io.github.antwny.aura.png" && ! -e "$SHARE/icons/hicolor/256x256/apps/io.github.antwny.aura.png" &&
+  -e "$SHARE/icons/hicolor/48x48/apps/other.png" && -e "$SHARE/icons/hicolor/256x256/apps/other.png" && -e "$SHARE/icons/hicolor/48x48/apps/io.github.antwny.aura.png.keep" ]] &&
+  grep -q 'stale' "$WORK/out"
+check "stale png: io.github.antwny.aura.png under hicolor/*/apps is removed and logged, other files stay" $?
+au
+grep -q 'total changes: 0' "$WORK/out"
+check "stale png: the second run changes nothing" $?
+# A symlinked stale png pointing outside HOME is not followed or touched.
+reset_state
+mkdir -p "$SHARE/icons/hicolor/48x48/apps" "$WORK/outside"
+echo keep >"$WORK/outside/victim"
+ln -s "$WORK/outside/victim" "$SHARE/icons/hicolor/48x48/apps/io.github.antwny.aura.png"
+au
+[[ "$rc" == 0 && -f "$WORK/outside/victim" && "$(cat "$WORK/outside/victim")" == keep ]]
+check "stale png: a link to a file outside HOME never damages the target" $?
+
 # --- M11b: _aura_current checks every artifact -------------------------------------------------------------------
-for victim in "$BINDIR/mpvpaper" "$D" "$SHARE/icons/hicolor/scalable/apps/io.github.antwny.aura.svg" "$SHARE/metainfo/io.github.antwny.aura.metainfo.xml"; do
+for victim in "$BINDIR/mpvpaper" "$D" "$SHARE/icons/hicolor/scalable/apps/io.github.antwny.aura.svg" "$SHARE/metainfo/io.github.antwny.aura.metainfo.xml" "$BINDIR/aura-effects" "$BINDIR/aura-depth" "$ACT/navbar-open-symbolic.svg" "$ACT/navbar-closed-symbolic.svg" "$ACT/fire-symbolic.svg"; do
   reset_state
   au
   rm -f -- "$victim"

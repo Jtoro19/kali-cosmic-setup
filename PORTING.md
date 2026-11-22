@@ -47,7 +47,7 @@ eos modules in their numbering order (`eos modules/`), with the Kali counterpart
 | 50-applets | applets | ported | Workspace Icons and Lock Keys are not packaged, so each is built with cargo from a pinned upstream commit. The Now Playing applet is dropped (AUR only). |
 | 55-panel | panel | ported | Same single top panel and applet order, except that Now Playing is gone from the center. |
 | 57-audio-resync | audio-resync | ported | Same workaround for the sound applet showing "No device selected"; the unit only runs under COSMIC. |
-| 60-aura | aura | opt-in | Aura from its official release `v1.5.0` (sha256 pinned, tarball inspected before extracting), restore user unit, Alt+S shortcut. |
+| 60-aura | aura | opt-in | Aura from its official release `v1.11.2` (sha256 pinned, tarball inspected before extracting), restore user unit, Alt+S shortcut. |
 | 65-steam-icons | none | dropped | Depends on Steam, dropped with gaming. |
 | 70-services | services | ported | Base services only: NetworkManager, bluetooth, power-profiles-daemon, systemd-timesyncd, fstrim.timer. firewalld, avahi, cups, VMware units and the sshd switch are dropped (service policy); Kali's `ssh` unit is never touched. |
 | 75-mime | mime | ported | Same defaults (Brave for web and PDF, PeaZip for zip) for installed apps only; Vesktop dropped. |

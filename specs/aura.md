@@ -13,19 +13,22 @@ eos `60-aura.sh`, `specs/aura.md` and `files/aura/*`, ported (plan: release
 tarball with sha256, plus the Alt+S shortcut that cosmic-settings no longer
 ships). Aura upstream: `github.com/antwny/aura`.
 
-- Pinned release `v1.5.0` (the one the reference machine runs; newer releases
-  exist, for example v1.11.2, but the module does not follow `latest`):
-  `https://github.com/antwny/aura/releases/download/v1.5.0/aura-v1.5.0-x86_64-linux.tar.gz`.
+- Pinned release `v1.11.2` (published 2026-11-20, moved from v1.5.0 at the
+  owner's request; the module does not follow `latest`):
+  `https://github.com/antwny/aura/releases/download/v1.11.2/aura-v1.11.2-x86_64-linux.tar.gz`.
 - Checksum: the project publishes `<tarball>.sha256` in every release and GitHub
-  computes an asset digest; for v1.5.0 both are
-  `0c6d7ea68e93e5e87a5d1e6f6bc31372646b65873d15175fdb10cecf26a4d1e8` (checked
+  computes an asset digest; for v1.11.2 both
+  (and a local `sha256sum`) are
+  `880ced8548a40bf5a260c1f1c7198d7fde3f474388ca6383b013b0c77f8bc954` (checked
   2026-11-22). That value is hard-coded in the module, so the checksum does not
   come from the same download as the tarball. Residual risk: there is no
   detached signature, so the pin is trust on first use of that release (the same
   stance as gentle-ai in packages-dev).
-- The tarball holds `aura`, a bundled `mpvpaper`, the desktop entry, an SVG
-  icon, the metainfo, `install.sh`/`uninstall.sh` and the licence. Both
-  binaries are dynamically linked x86_64 ELF.
+- The tarball holds `aura`, a bundled `mpvpaper`, the optional `aura-effects`
+  and `aura-depth` executables, the desktop entry, an SVG icon, the symbolic
+  icons `navbar-open-symbolic.svg`, `navbar-closed-symbolic.svg` and
+  `fire-symbolic.svg`, the metainfo, `install.sh`/`uninstall.sh` and the
+  licence. The binaries are dynamically linked x86_64 ELF.
 - eos Alt+S entry (`custom.in`): description `aurahud`, action
   `Spawn("$HOME/.local/bin/aura switcher")`.
 
@@ -34,16 +37,23 @@ ships). Aura upstream: `github.com/antwny/aura`.
 - Packages (only if missing): `mpv`, `libmpv2` (the bundled `mpvpaper` links `libmpv.so.2`, which Kali's `mpv` does not pull in), `ffmpeg`, `jq`, `curl` from Kali.
 - User scope, like eos and the upstream `install.sh --user` (the upstream
   script itself is never run):
-  - `~/.local/bin/aura`, `~/.local/bin/mpvpaper` (0755, no `.bak` of a
-    reproducible binary)
+  - `~/.local/bin/aura`, `~/.local/bin/mpvpaper`, and, when the release ships
+    them, `~/.local/bin/aura-effects` and `~/.local/bin/aura-depth` (0755, no
+    `.bak` of a reproducible binary)
+  - `~/.local/share/icons/hicolor/scalable/actions/navbar-open-symbolic.svg`,
+    `navbar-closed-symbolic.svg` (required) and `fire-symbolic.svg` (optional),
+    0644
+  - removed, like upstream: stale `~/.local/share/icons/hicolor/*/apps/io.github.antwny.aura.png`
+    (that exact name only, logged as a change, through the user path guards)
   - `~/.local/share/applications/io.github.antwny.aura.desktop` (absolute
     `TryExec`/`Exec`, the same rewrite as upstream)
   - `~/.local/share/icons/hicolor/scalable/apps/io.github.antwny.aura.svg`
   - `~/.local/share/metainfo/io.github.antwny.aura.metainfo.xml`
   - `update-desktop-database` and `gtk-update-icon-cache` run only when files
     changed (the icon cache only if one exists).
-- `~/.local/state/kali-cosmic-setup/aura/version`: the installed tag, written
-  after every file was installed.
+- `~/.local/state/kali-cosmic-setup/aura/version`: the installed tag, the
+  mpvpaper state and the optional members shipped, written after every file was
+  installed.
 - `~/.local/bin/aura-restore` (0755) and
   `~/.config/systemd/user/aura-restore.service`; the unit is enabled (starts at
   once when a user manager is reachable, otherwise the run says how to enable it).
@@ -75,18 +85,23 @@ unit is `Restart=on-failure`. Wallpapers are user data and never touched.
 
 ## Decisions on ambiguities
 
-1. **Pinned version and checksum, no `latest`.** The module installs `v1.5.0`
+1. **Pinned version and checksum, no `latest`.** The module installs `v1.11.2`
    with the hard-coded sha256 above. The checksum is verified by
    `download_verified` and again right before the archive is unpacked (the
    directory is user-owned). `AURA_SHA256` replaces the pin only when
    `KCS_TEST` is set (tests serve a fixture); a real run cannot override it.
    There is no `AURA_VERSION`: to move the pin edit the tag and the checksum
    together, after comparing the checksum with the release.
-2. **Idempotent by version.** A marker file holds the installed tag (line 1) and
-   `mpvpaper=bundled|none` (line 2, whether the release shipped mpvpaper). The
-   install is skipped (no network) when the marker equals the pin and every
-   artifact exists: `aura`, `mpvpaper` (when bundled), the desktop entry, the icon
-   and the metainfo; a different marker (an upgrade of the pin) or any missing
+2. **Idempotent by version.** A marker file holds the installed tag (line 1),
+   `mpvpaper=bundled|none` (line 2, whether the release shipped mpvpaper) and
+   `optional=<names>` (line 3, which of `aura-effects`, `aura-depth` and
+   `fire-symbolic.svg` the release shipped; a marker without that line lists
+   none). The install is skipped (no network) when the marker equals the pin and
+   every artifact exists: `aura`, `mpvpaper` (when bundled), the optional members
+   the marker lists (so an optional file the release did not ship is never
+   required), the two navbar icons, the desktop entry, the icon and the
+   metainfo. A v1.5.0 marker simply differs from the pin, so the module upgrades;
+   any other different marker (an upgrade of the pin) or any missing
    artifact installs again. Dry-run announces the download and never downloads.
 3. **Alt+S follows the merge rule of specs/cosmic-settings.md.** The `custom`
    map is shared. The reader and merger live in `lib/common.sh`
@@ -115,14 +130,17 @@ unit is `Restart=on-failure`. Wallpapers are user data and never touched.
    `tar -tvzf` must show only members under `aura-<tag>-x86_64-linux/` (no absolute
    name, no `..` component, no other top-level name) and only regular files and
    directories (a symlink or hard link could point outside); `$pkg` and
-   `mpvpaper` must not be symlinks. A release without `mpvpaper` still installs
-   (the marker says `mpvpaper=none`; aura-restore falls back to one on PATH).
+   `mpvpaper`, `aura-effects`, `aura-depth` and `fire-symbolic.svg` must not be
+   symlinks; the navbar icons are required members (plain files). A release
+   without `mpvpaper` still installs (the marker says `mpvpaper=none`;
+   aura-restore falls back to one on PATH), and so does one without the optional
+   members.
 9. **Existing binaries (M11b).** `~/.local/bin/aura` or `mpvpaper` that is there
    without our marker and is not byte-identical is backed up once
    (`<file>.bak.<timestamp>`) before the pinned one replaces it; with the marker
    they are reproducible, so no backup. A newer Aura is never downgraded: when the
    marker or `aura --version` (5 s limit, no input; it prints `Aura Live
-   Wallpaper v1.5.0` and exits) reports a version newer than the pin, the install
+   Wallpaper v1.11.2` and exits) reports a version newer than the pin, the install
    is skipped with a warning and the rest of the module still runs.
 10. **The shortcut needs a plain HOME (M11b).** `cosmic_shortcut_ensure` refuses a
     double quote or backslash in the modifiers, key or description, and in the
@@ -132,6 +150,15 @@ unit is `Restart=on-failure`. Wallpapers are user data and never touched.
 11. **aura-restore (M11b).** `--` precedes the output and wallpaper values (they
     come from the user's config), and the unit has `StartLimitIntervalSec=120`,
     `StartLimitBurst=5` and `RestartSec=5`, so a crash loop ends.
+12. **No `environment.d` file and no shell rc edit (v1.11.2).** Upstream's `--user`
+    install writes `~/.config/environment.d/50-aura.conf` (a PATH fix so KDE
+    Plasma global shortcuts find `aura switcher`) and appends `~/.local/bin` to
+    `.bashrc`, `.profile` and `.zshrc` when it is not on PATH. This setup is
+    COSMIC only, the desktop entry already uses absolute `Exec`/`TryExec` paths
+    and the Alt+S shortcut spawns `$HOME/.local/bin/aura switcher` by absolute
+    path, so neither is needed; not writing them keeps the module's footprint
+    small and its revert list exact. (The shell PATH is the packages-dev/shell
+    modules' business.)
 
 ## Hardware detection
 
@@ -151,9 +178,13 @@ is added only when the combination is free. A second run reports
 systemctl --user disable --now aura-restore.service
 rm ~/.config/systemd/user/aura-restore.service ~/.local/bin/aura-restore
 systemctl --user daemon-reload
-rm ~/.local/bin/aura ~/.local/bin/mpvpaper ~/.local/state/kali-cosmic-setup/aura/version
+rm ~/.local/bin/aura ~/.local/bin/mpvpaper ~/.local/bin/aura-effects ~/.local/bin/aura-depth \
+   ~/.local/state/kali-cosmic-setup/aura/version
 rm ~/.local/share/applications/io.github.antwny.aura.desktop \
    ~/.local/share/icons/hicolor/scalable/apps/io.github.antwny.aura.svg \
+   ~/.local/share/icons/hicolor/scalable/actions/navbar-open-symbolic.svg \
+   ~/.local/share/icons/hicolor/scalable/actions/navbar-closed-symbolic.svg \
+   ~/.local/share/icons/hicolor/scalable/actions/fire-symbolic.svg \
    ~/.local/share/metainfo/io.github.antwny.aura.metainfo.xml
 ```
 

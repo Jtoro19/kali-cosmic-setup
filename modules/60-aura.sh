@@ -15,10 +15,10 @@ MODULE_DEPS=""
 # The release pin: the tag of github.com/antwny/aura that the reference machine
 # runs, and the sha256 of its x86_64 tarball. The same value is published in the
 # release's own aura-<tag>-x86_64-linux.tar.gz.sha256 and equals the digest
-# GitHub computes for the asset (checked 2026-11-22). To move the pin, change
+# GitHub computes for the asset (v1.11.2, checked 2026-11-22). To move the pin, change
 # both lines and re-check the checksum against the release.
-_AURA_VERSION="v1.5.0"
-_AURA_SHA256="0c6d7ea68e93e5e87a5d1e6f6bc31372646b65873d15175fdb10cecf26a4d1e8"
+_AURA_VERSION="v1.11.2"
+_AURA_SHA256="880ced8548a40bf5a260c1f1c7198d7fde3f474388ca6383b013b0c77f8bc954"
 _AURA_URL_BASE="https://github.com/antwny/aura/releases/download"
 
 _aura_marker() {
@@ -29,13 +29,20 @@ _aura_share() { printf '%s\n' "${XDG_DATA_HOME:-$HOME/.local/share}"; }
 
 # The marker: line 1 is the installed tag, line 2 says whether the release
 # shipped its own mpvpaper ("mpvpaper=bundled", also assumed for a marker with
-# one line) or not ("mpvpaper=none").
+# one line) or not ("mpvpaper=none"), line 3 lists the optional members the
+# release shipped ("optional=aura-effects aura-depth fire-symbolic.svg"; none
+# for a marker without that line, so an old marker never demands them).
+
+# The optional members: two executables (~/.local/bin) and one action icon.
+_AURA_OPT_BINS="aura-effects aura-depth"
+_AURA_OPT_ICONS="fire-symbolic.svg"
+_AURA_REQ_ICONS="navbar-open-symbolic.svg navbar-closed-symbolic.svg"
 
 # _aura_current: the pinned version is installed (marker) and every artifact of
-# it exists: aura, mpvpaper (when the release ships one), desktop entry, icon
-# and metainfo.
+# it exists: aura, mpvpaper (when the release ships one), the optional members
+# the marker lists, the required action icons, desktop entry, icon and metainfo.
 _aura_current() {
-  local m share ver mp
+  local m share ver mp opt f
   m="$(_aura_marker)"
   share="$(_aura_share)"
   [[ -f "$m" ]] || return 1
@@ -43,6 +50,21 @@ _aura_current() {
   mp="$(sed -n 2p "$m")"
   [[ "$ver" == "$_AURA_VERSION" && -x "$HOME/.local/bin/aura" ]] || return 1
   [[ "$mp" == "mpvpaper=none" || -x "$HOME/.local/bin/mpvpaper" ]] || return 1
+  for f in $_AURA_REQ_ICONS; do
+    [[ -f "$share/icons/hicolor/scalable/actions/$f" ]] || return 1
+  done
+  opt="$(sed -n 3p "$m")"
+  opt="${opt#optional=}"
+  for f in $opt; do
+    case " $_AURA_OPT_BINS " in
+      *" $f "*) [[ -x "$HOME/.local/bin/$f" ]] || return 1 ;;
+      *)
+        case " $_AURA_OPT_ICONS " in
+          *" $f "*) [[ -f "$share/icons/hicolor/scalable/actions/$f" ]] || return 1 ;;
+        esac
+        ;;
+    esac
+  done
   [[ -f "$share/applications/io.github.antwny.aura.desktop" &&
     -f "$share/icons/hicolor/scalable/apps/io.github.antwny.aura.svg" &&
     -f "$share/metainfo/io.github.antwny.aura.metainfo.xml" ]]
@@ -88,7 +110,7 @@ _aura_install_bin() {
 _aura_install_files() {
   local pkg="$1"
   local bin_dir="$HOME/.local/bin"
-  local share desktop line before="$CHANGES"
+  local share desktop line f png before="$CHANGES"
   share="$(_aura_share)"
 
   # Reproducible from the pinned release, so no .bak executables on PATH (an
@@ -97,8 +119,26 @@ _aura_install_files() {
   if [[ -f "$pkg/mpvpaper" ]]; then
     _aura_install_bin "$pkg/mpvpaper" "$bin_dir/mpvpaper" || return 1
   fi
+  for f in $_AURA_OPT_BINS; do
+    if [[ -f "$pkg/$f" ]]; then
+      _aura_install_bin "$pkg/$f" "$bin_dir/$f" || return 1
+    fi
+  done
   install_file "$pkg/io.github.antwny.aura.svg" \
     "$share/icons/hicolor/scalable/apps/io.github.antwny.aura.svg" 0644 || return 1
+  for f in $_AURA_REQ_ICONS $_AURA_OPT_ICONS; do
+    if [[ -f "$pkg/$f" ]]; then
+      install_file "$pkg/$f" "$share/icons/hicolor/scalable/actions/$f" 0644 || return 1
+    fi
+  done
+  # Like upstream: drop stale PNGs of the Aura icon (exactly this name, in an
+  # apps/ directory one level below hicolor), through the user path guards.
+  for png in "$share"/icons/hicolor/*/apps/io.github.antwny.aura.png; do
+    [[ -e "$png" || -L "$png" ]] || continue
+    user_path_writable "$png" || continue
+    log_change "remove stale icon $png"
+    run rm -f -- "$png"
+  done
   install_file "$pkg/io.github.antwny.aura.metainfo.xml" \
     "$share/metainfo/io.github.antwny.aura.metainfo.xml" 0644 || return 1
 
@@ -128,7 +168,7 @@ _aura_install_files() {
 # _aura_fetch_install <tmp>: download, verify (twice: right before unpacking the
 # user-owned copy is checked again), unpack and install the release.
 _aura_fetch_install() {
-  local tmp="$1" name="aura-${_AURA_VERSION}-x86_64-linux" sum="$_AURA_SHA256" tarball pkg marker f
+  local tmp="$1" name="aura-${_AURA_VERSION}-x86_64-linux" sum="$_AURA_SHA256" tarball pkg marker f opt
   tarball="$tmp/$name.tar.gz"
   # The tests serve a fixture; a real run always uses the pinned checksum.
   if [[ -n "${KCS_TEST:-}" && -n "${AURA_SHA256:-}" ]]; then
@@ -152,22 +192,26 @@ _aura_fetch_install() {
     log_error "aura: unexpected tarball layout, $name is not a plain directory (not installing)"
     return 1
   fi
-  for f in aura io.github.antwny.aura.svg io.github.antwny.aura.metainfo.xml io.github.antwny.aura.desktop; do
+  for f in aura io.github.antwny.aura.svg io.github.antwny.aura.metainfo.xml io.github.antwny.aura.desktop $_AURA_REQ_ICONS; do
     if [[ ! -f "$pkg/$f" || -L "$pkg/$f" ]]; then
       log_error "aura: unexpected tarball layout, $name/$f not found (not installing)"
       return 1
     fi
   done
-  if [[ -L "$pkg/mpvpaper" ]]; then
-    log_error "aura: unexpected tarball layout, $name/mpvpaper is a symlink (not installing)"
-    return 1
-  fi
+  opt=""
+  for f in mpvpaper $_AURA_OPT_BINS $_AURA_OPT_ICONS; do
+    if [[ -L "$pkg/$f" ]]; then
+      log_error "aura: unexpected tarball layout, $name/$f is a symlink (not installing)"
+      return 1
+    fi
+    [[ "$f" != mpvpaper && -f "$pkg/$f" ]] && opt+="${opt:+ }$f"
+  done
   _aura_install_files "$pkg" || return 1
 
   marker="$(_aura_marker)"
   if user_path_writable "$marker"; then
     mkdir -p -- "$(dirname "$marker")"
-    printf '%s\nmpvpaper=%s\n' "$_AURA_VERSION" "$([[ -f "$pkg/mpvpaper" ]] && echo bundled || echo none)" >"$marker"
+    printf '%s\nmpvpaper=%s\noptional=%s\n' "$_AURA_VERSION" "$([[ -f "$pkg/mpvpaper" ]] && echo bundled || echo none)" "$opt" >"$marker"
   fi
 }
 
