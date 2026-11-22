@@ -96,7 +96,7 @@ _packages_sha256_ok() {
 # only when KCS_TEST is set (the tests serve a fixture, not the real .deb); a
 # real run always uses the pinned value.
 _packages_peazip() {
-  local want="$_PACKAGES_PEAZIP_SHA256" cur dir deb rdir="" rdeb rt rc=0
+  local want="$_PACKAGES_PEAZIP_SHA256" cur dir deb rdeb rt rc=0
   if [[ -n "${KCS_TEST:-}" && -n "${PACKAGES_PEAZIP_SHA256:-}" ]]; then
     want="$PACKAGES_PEAZIP_SHA256"
   fi
@@ -125,15 +125,16 @@ _packages_peazip() {
   # directory is 0755 and the copy 0644 so apt's unprivileged _apt user can
   # read it.
   dir="$(mktemp -d)"
+  _PACKAGES_TMP_USER="$dir"
   chmod 0700 "$dir"
   deb="$dir/$_PACKAGES_PEAZIP_DEB"
   download_verified "$_PACKAGES_PEAZIP_URL" "$deb" "$want" || rc=$?
   if ((rc == 0)); then
-    rdir="$(run_sudo_may_fail mktemp -d)" || rc=$?
+    _PACKAGES_TMP_ROOT="$(run_sudo_may_fail mktemp -d)" || rc=$?
   fi
   if ((rc == 0)); then
-    run_sudo_may_fail chmod 0755 "$rdir" || rc=$?
-    rdeb="$rdir/$_PACKAGES_PEAZIP_DEB"
+    run_sudo_may_fail chmod 0755 "$_PACKAGES_TMP_ROOT" || rc=$?
+    rdeb="$_PACKAGES_TMP_ROOT/$_PACKAGES_PEAZIP_DEB"
   fi
   if ((rc == 0)); then
     run_sudo_may_fail install -m0644 "$deb" "$rdeb" || rc=$?
@@ -146,15 +147,32 @@ _packages_peazip() {
       rc=1
     fi
   fi
-  [[ -z "$rdir" ]] || run_sudo_may_fail rm -rf -- "$rdir" || true
-  rm -rf -- "$dir"
+  _packages_cleanup
   if ((rc != 0)); then
     log_error "peazip $_PACKAGES_PEAZIP_VERSION was not installed (exit $rc)"
   fi
   return "$rc"
 }
 
+# _packages_cleanup: remove the user temp dir and the root-owned staging dir of
+# the PeaZip install. It runs at the end of the install and as the EXIT trap of
+# this module, because a fail-fast helper or a signal ends the module with exit
+# and the staging dir would stay behind in /tmp. Safe to call twice.
+_packages_cleanup() {
+  if [[ -n "${_PACKAGES_TMP_ROOT:-}" ]]; then
+    run_sudo_may_fail rm -rf -- "$_PACKAGES_TMP_ROOT" || true
+    _PACKAGES_TMP_ROOT=""
+  fi
+  if [[ -n "${_PACKAGES_TMP_USER:-}" ]]; then
+    rm -rf -- "$_PACKAGES_TMP_USER"
+    _PACKAGES_TMP_USER=""
+  fi
+}
+
 module_apply() {
+  _PACKAGES_TMP_USER=""
+  _PACKAGES_TMP_ROOT=""
+  trap _packages_cleanup EXIT
   install_package_list core || return 1
   _packages_brave || return 1
   _packages_peazip || return 1

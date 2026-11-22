@@ -185,6 +185,119 @@ cs
 [[ "$rc" == 0 && "$(cat "$CFG/$SC")" == 'not a ron map' ]] && grep -q '\[warn\].*custom' "$WORK/out"
 check "shortcuts: an unrecognised file is left alone with a warning" $?
 
+# --- shortcuts: merge shape and "already bound" detection ----------------------
+# flat <file>: the file without whitespace, for shape checks.
+flat() { tr -d ' \n\t' <"$1"; }
+# balanced <file>: braces and parentheses balance.
+balanced() {
+  local f
+  f="$(flat "$1")"
+  local o="${f//[^(]/}" c="${f//[^)]/}" ob="${f//[^\{]/}" cb="${f//[^\}]/}"
+  [[ ${#o} == "${#c}" && ${#ob} == "${#cb}" ]]
+}
+put_custom() { # put_custom <content>: a fresh state with this custom file
+  reset_state
+  mkdir -p "$(dirname "$CFG/$SC")"
+  printf '%s' "$1" >"$CFG/$SC"
+}
+
+# W1: the last entry has no trailing comma.
+put_custom '{
+    (
+        modifiers: [Ctrl],
+        key: "f",
+        description: None,
+    ): Spawn("flameshot gui")
+}'
+cs
+f="$(flat "$CFG/$SC")"
+[[ "$rc" == 0 && "$f" == *'Spawn("flameshotgui"),('* && "$f" == *'Spawn("cosmic-screenshot"),}' ]] && balanced "$CFG/$SC"
+check "shortcuts: a last entry without a trailing comma gets one before the new entry (valid map)" $?
+cs
+grep -q 'total changes: 0' "$WORK/out"
+check "shortcuts: the repaired map is stable on the next run" $?
+# A trailing comment after the last entry must not swallow the comma.
+put_custom '{
+    (
+        modifiers: [Ctrl],
+        key: "f",
+        description: None,
+    ): Spawn("flameshot gui") // mine
+}'
+cs
+grep -q 'Spawn("flameshot gui"), // mine' "$CFG/$SC" && grep -q 'Spawn("cosmic-screenshot")' "$CFG/$SC" && balanced "$CFG/$SC"
+check "shortcuts: the comma goes right after the last entry, before its trailing comment" $?
+# A shape the module does not understand is left alone with a warning.
+for junk in '{ junk }' '{ ( modifiers: [Ctrl], key: "f" ): Spawn("x"), ' '{ ( modifiers: [Ctrl] ): Spawn("x"), }' \
+  '{ ( modifiers: [Ctrl], key: "f" ): Spawn("x") ( modifiers: [Alt], key: "g" ): Spawn("y"), }'; do
+  put_custom "$junk"
+  cs
+  [[ "$rc" == 0 && "$(cat "$CFG/$SC")" == "$junk" ]] && grep -q '\[warn\].*custom' "$WORK/out" && ! ls "$CFG/$SC".bak.* >/dev/null 2>&1
+  check "shortcuts: untouched with a warning for: $junk" $?
+done
+
+# W2: comments are not bindings.
+put_custom '{
+    // (modifiers: [Super, Shift], key: "s"): Spawn("old"),
+    (
+        modifiers: [Ctrl],
+        key: "f",
+        description: None, // Super+Shift, key: "s"
+    ): Spawn("flameshot gui"), // modifiers: [Shift, Super], key: "s"
+}'
+cs
+[[ "$rc" == 0 ]] && grep -q 'Spawn("cosmic-screenshot")' "$CFG/$SC" && grep -q 'Spawn("old")' "$CFG/$SC" && balanced "$CFG/$SC"
+check "shortcuts: a commented-out binding is not a binding, the entry is added" $?
+# W2: field order and modifier order.
+for entry in \
+  '(key: "s", modifiers: [Shift, Super], description: None): Spawn("a"),' \
+  '(key: "S", modifiers: [Super, Shift]): Spawn("cosmic-screenshot"),' \
+  '(description: None, key: "s", modifiers: [Shift,Super]): Spawn("a"),'; do
+  put_custom "{ $entry }"
+  cs
+  [[ "$rc" == 0 && "$(cat "$CFG/$SC")" == "{ $entry }" ]]
+  check "shortcuts: already bound is detected for: $entry" $?
+done
+# The same combination bound with another key or other modifiers is not a duplicate.
+put_custom '{ (modifiers: [Super, Shift, Ctrl], key: "s", description: None): Spawn("a"), (modifiers: [Super, Shift], key: "x", description: None): Spawn("b"), }'
+cs
+[[ "$(grep -c 'cosmic-screenshot' "$CFG/$SC")" == 2 ]] && balanced "$CFG/$SC"
+check "shortcuts: other modifiers or another key are not Super+Shift+S" $?
+cs
+grep -q 'total changes: 0' "$WORK/out"
+check "shortcuts: no duplicate entry is added on a second run" $?
+
+# S5: never write through sudo into config the invoking user does not own.
+cat >"$WORK/bin/stat" <<'EOS'
+#!/bin/sh
+# FAKE_NOT_OWNED: paths (colon separated) that "belong to root".
+if [ "$1" = "-c" ] && [ "$2" = "%u" ]; then
+  p="${4:-$3}"
+  old="$IFS"; IFS=:
+  for n in $FAKE_NOT_OWNED; do [ "$p" = "$n" ] && { echo $(($(/usr/bin/id -u) + 1)); exit 0; }; done
+  IFS="$old"
+fi
+exec /usr/bin/stat "$@"
+EOS
+chmod +x "$WORK/bin/stat"
+reset_state
+mkdir -p "$CFG"
+FAKE_NOT_OWNED="$CFG" cs
+[[ "$rc" == 0 && -z "$(find "$CFG" -type f 2>/dev/null)" ]] && grep -q '\[warn\].*not owned' "$WORK/out" && ! grep -q "$HOME_DIR" "$FAKE_STATE/sudo.log"
+check "ownership: a ~/.config/cosmic owned by someone else is skipped with a warning, no sudo write" $?
+reset_state
+mkdir -p "$CFG/com.system76.CosmicTk/v1" "$CFG/com.system76.CosmicIdle/v1"
+FAKE_NOT_OWNED="$CFG/com.system76.CosmicTk/v1" cs
+[[ "$rc" == 0 && ! -e "$CFG/com.system76.CosmicTk/v1/icon_theme" && -e "$CFG/com.system76.CosmicIdle/v1/screen_off_time" &&
+  -e "$CFG/$SC" ]] && grep -q '\[warn\].*not owned' "$WORK/out" && ! grep -q "$HOME_DIR" "$FAKE_STATE/sudo.log"
+check "ownership: a key dir owned by someone else is skipped, the other keys are written, no sudo write" $?
+reset_state
+mkdir -p "$(dirname "$CFG/$SC")"
+printf '{}' >"$CFG/$SC"
+FAKE_NOT_OWNED="$CFG/$SC" cs
+[[ "$rc" == 0 && "$(cat "$CFG/$SC")" == '{}' ]] && ! grep -q "$HOME_DIR" "$FAKE_STATE/sudo.log"
+check "ownership: a shortcuts file owned by someone else is not rewritten" $?
+
 # --- failures ---------------------------------------------------------------
 reset_state
 FAKE_APT_RC=100 cs

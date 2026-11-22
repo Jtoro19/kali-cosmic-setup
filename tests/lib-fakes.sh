@@ -95,6 +95,9 @@ for a in "$@"; do
               if [ -f "$a" ]; then echo "deb-file-present $a" >>"$FAKE_STATE/all.log"
               else echo "deb-file-MISSING $a" >>"$FAKE_STATE/all.log"; exit 100; fi
               [ -n "${FAKE_APT_FAIL_DEB:-}" ] && exit 100
+              # FAKE_APT_KILL_PARENT: end the calling shell (the module) with SIGTERM
+              # right after the deb is seen, like an interrupted run.
+              [ -n "${FAKE_APT_KILL_PARENT:-}" ] && { kill -TERM "$PPID"; exit 143; }
               dp="${FAKE_DEB_PACKAGE:-peazip}"
               echo "$dp" >>"$FAKE_STATE/installed"
               grep -v "^$dp " "$FAKE_STATE/versions" >"$FAKE_STATE/versions.new" 2>/dev/null

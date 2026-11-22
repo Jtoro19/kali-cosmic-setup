@@ -211,6 +211,16 @@ check "peazip: the temporary download is removed after a mismatch" $?
 installed_has brave-browser firefox-esr
 check "peazip: Brave and the core list were installed before PeaZip failed" $?
 
+# A forced exit (SIGTERM, or a fail-fast helper) in the middle of the install
+# still removes the user temp dir and the root-owned staging dir (EXIT trap).
+reset_state
+FAKE_APT_KILL_PARENT=1 pk
+[[ "$rc" != 0 && -z "$(ls -A "$TMPDIR")" ]]
+check "peazip: a forced exit removes the user temp dir and the root-owned staging dir" $?
+grep -q "^deb-file-present .*/$DEB\$" "$FAKE_STATE/all.log" &&
+  grep -q 'rm -rf' "$FAKE_STATE/sudo.log"
+check "peazip: the root-owned staging dir was removed through sudo by the trap" $?
+
 # A real run (no KCS_TEST marker) ignores a PACKAGES_PEAZIP_SHA256 in the environment.
 reset_state
 PK_KCS_TEST='' pk

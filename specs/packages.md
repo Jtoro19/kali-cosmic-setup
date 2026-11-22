@@ -136,7 +136,9 @@ Dropped, with the reason:
   (`sudo mktemp -d`; apt reads it as `_apt`), re-checks the SHA-256 of that
   copy and installs from it. Root never installs a file that a user process
   could still change. Both directories are removed on every outcome, including
-  a failed `apt-get install`. The runtime dependency check loops over every
+  a failed `apt-get install`, a fail-fast exit or a SIGTERM: the module sets an
+  EXIT trap (`_packages_cleanup`, scoped like the one in packages-dev) that
+  removes the user directory and, through sudo, the root-owned staging dir. The runtime dependency check loops over every
   package in `_PACKAGES_PEAZIP_RUNTIME`. Dry-run creates no temporary directory
   and downloads nothing.
 - All downloads (`download_verified`, `apt_install_key`) use `curl --proto

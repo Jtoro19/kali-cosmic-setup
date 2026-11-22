@@ -61,7 +61,13 @@ except for the shortcuts file (see below). Each key was checked against COSMIC
    after a `.bak.<timestamp>` backup; if Super+Shift+S is already bound (to
    anything, in either modifier order) the file is left alone, because a
    duplicate key would make the map invalid; an unrecognisable file is left
-   alone with a warning. The module never removes or edits entries it does not
+   alone with a warning. The map is read by a small awk reader: `//` comments
+   and strings are skipped (a commented-out binding is not a binding), fields
+   may come in any order and the modifiers in either order, a last entry
+   without a trailing comma gets one (before its trailing comment) prior to
+   appending, and any shape the reader does not understand (block comment,
+   unbalanced brackets, an entry without `key`, a missing comma between
+   entries) leaves the file untouched with a warning. The module never removes or edits entries it does not
    own. The aura module must follow the same rule (add its Alt+S entry inside
    the map, never replace the file), so either order of the two modules works
    and neither clobbers the other.
@@ -88,7 +94,11 @@ except for the shortcuts file (see below). Each key was checked against COSMIC
    `input_devices` (hardware specific).
 7. **User scope.** The installer refuses to run as root, so `$HOME` is the
    invoking user's home; nothing is written to root's home or outside
-   `~/.config/cosmic`.
+   `~/.config/cosmic`. When `~/.config/cosmic` or a component or version
+   directory below it (or the key file itself) exists but is not owned by the
+   invoking user (for example left by an earlier `sudo` run), the module warns
+   once per directory and skips what is below it: it never writes through
+   sudo into the user's config.
 
 ## Files and packages touched
 
@@ -115,6 +125,8 @@ binding. A second run reports `total changes: 0` (also after a live session).
 
 - Restore a key from its `<key>.bak.<timestamp>` file, or delete the key file
   under `~/.config/cosmic/` to fall back to the COSMIC default for that key.
+  The `.bak` files sit next to the keys inside the watched v1 directories
+  (cosmic-config ignores them); delete them after restoring.
 - Remove the Super+Shift+S entry from the `custom` shortcuts file (or restore its backup).
 - `sudo apt-get purge papirus-icon-theme` to remove the icon theme.
 

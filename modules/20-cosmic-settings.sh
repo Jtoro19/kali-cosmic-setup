@@ -30,19 +30,138 @@ _COSMIC_SEED_ONLY=(
   "com.system76.CosmicTheme.Mode/v1/is_dark"
 )
 
+# _COSMIC_RON_AWK: a small reader for the `custom` shortcut map, a RON map of
+# `(modifiers: [...], key: "x", description: ...): Action,` entries. It skips
+# // comments and strings, accepts any field order, and understands only that
+# shape: anything else (a block comment, unbalanced brackets, an entry without a
+# key, a missing comma) ends with status 2, "not understood". With mode=scan it
+# prints whether Super+Shift+S is bound: `free`, `screenshot` (to
+# cosmic-screenshot) or `other`. With mode=open it prints the file up to its
+# final brace, with a comma inserted after the last entry when it lacks one.
+# shellcheck disable=SC2016  # awk program, not shell
+_COSMIC_RON_AWK='
+function bad() { exit 2 }
+function finish_action() {
+  if (inact && pm) status = (act == ":Spawn(\"cosmic-screenshot\")") ? "screenshot" : "other"
+  inact = 0; pm = 0; act = ""
+}
+function tuple(   piece, m, k, parts, np, j, sorted) {
+  if (!match(tup, /(^|,)key:"#[0-9]+"/)) bad()
+  piece = substr(tup, RSTART, RLENGTH); sub(/^,/, "", piece)
+  k = strs[substr(piece, 7, length(piece) - 7)]
+  m = ""
+  if (match(tup, /(^|,)modifiers:\[[^]]*\]/)) {
+    piece = substr(tup, RSTART, RLENGTH); sub(/^,/, "", piece)
+    np = split(substr(piece, 12, length(piece) - 12), parts, ",")
+    for (j = 1; j <= np; j++) if (parts[j] != "") list[++cnt] = parts[j]
+    # sort the modifier names so that their order does not matter
+    for (j = 1; j <= cnt; j++) for (x = j + 1; x <= cnt; x++) if (list[x] < list[j]) { t = list[j]; list[j] = list[x]; list[x] = t }
+    for (j = 1; j <= cnt; j++) m = m (j > 1 ? "," : "") list[j]
+    cnt = 0
+  }
+  pm = (m == "Shift,Super" && tolower(k) == "s")
+}
+{ buf = buf $0 "\n" }
+END {
+  n = length(buf); status = "free"
+  for (i = 1; i <= n; i++) {
+    c = substr(buf, i, 1)
+    if (c ~ /[ \t\r\n]/) continue
+    if (c == "/" && substr(buf, i + 1, 1) == "/") { while (i <= n && substr(buf, i, 1) != "\n") i++; continue }
+    if (c == "/" && substr(buf, i + 1, 1) == "*") bad()
+    if (done) bad()
+    pcode = lastcode; pch = lastch
+    if (c == "\"") {
+      j = i + 1; s = ""
+      while (j <= n) {
+        d = substr(buf, j, 1)
+        if (d == "\\") { s = s d substr(buf, j + 1, 1); j += 2; continue }
+        if (d == "\"") break
+        s = s d; j++
+      }
+      if (j > n || depth < 1) bad()
+      i = j; strs[++ns] = s
+      if (intup) tup = tup "\"#" ns "\""
+      else if (inact) act = act "\"" s "\""
+      else bad()
+      lastcode = i; lastch = "\""
+      continue
+    }
+    lastcode = i; lastch = c
+    if (c == "{" || c == "(" || c == "[") {
+      if (depth == 0) { if (c != "{" || seen) bad(); seen = 1; depth = 1; stack[1] = c; continue }
+      if (depth == 1 && !inact) { if (c != "(") bad(); depth = 2; stack[2] = c; intup = 1; tup = ""; continue }
+      if (depth == 1 && inact && c == "(" && substr(act, length(act), 1) == ")") bad()
+      depth++; stack[depth] = c
+      if (intup) tup = tup c; else act = act c
+      continue
+    }
+    if (c == "}" || c == ")" || c == "]") {
+      if (depth == 0) bad()
+      o = stack[depth]
+      if (!((o == "{" && c == "}") || (o == "(" && c == ")") || (o == "[" && c == "]"))) bad()
+      depth--
+      if (depth == 0) { finish_action(); closepos = i; fcode = pcode; fch = pch; done = 1; continue }
+      if (depth == 1 && intup) { intup = 0; tuple(); inact = 1; act = ""; continue }
+      if (intup) tup = tup c; else act = act c
+      continue
+    }
+    if (depth == 0) bad()
+    if (c == "," && depth == 1) { if (!inact) bad(); finish_action(); continue }
+    if (intup) tup = tup c
+    else if (inact) act = act c
+    else bad()
+  }
+  if (!done || depth != 0) bad()
+  if (mode == "scan") { print status; exit 0 }
+  if (fch != "{" && fch != "," && fch !~ /[A-Za-z0-9_)"\]]/) bad()
+  printf "%s", substr(buf, 1, fcode)
+  if (fch != "{" && fch != ",") printf ","
+  printf "%s", substr(buf, fcode + 1, closepos - fcode - 1)
+}'
+
+# Directories already reported as not owned (one warning each).
+_COSMIC_WARNED=""
+
+# _cosmic_owned <path>: true when the invoking user owns the path. Config that
+# someone else owns is never written through sudo (see _cosmic_writable).
+_cosmic_owned() {
+  [[ "$(stat -c %u -- "$1")" == "$(id -u)" ]]
+}
+
+# _cosmic_writable <dest>: true when no existing directory from ~/.config/cosmic
+# down to the key, and not the key itself, belongs to someone else. Otherwise it
+# warns, because install_file would use sudo for a location the user cannot
+# write: this module only ever writes the invoking user's own files.
+_cosmic_writable() {
+  local dest="$1" root="$HOME/.config/cosmic" p
+  p="$(dirname "$dest")"
+  [[ -e "$dest" ]] && p="$dest"
+  while [[ "$p" == "$root" || "$p" == "$root"/* ]]; do
+    if [[ -e "$p" ]] && ! _cosmic_owned "$p"; then
+      if [[ "$_COSMIC_WARNED" != *"|$p|"* ]]; then
+        _COSMIC_WARNED="$_COSMIC_WARNED|$p|"
+        log_warn "$p is not owned by $(id -un): not writing anything below it (fix it with: sudo chown -R $(id -un) $root)"
+      fi
+      return 1
+    fi
+    p="$(dirname "$p")"
+  done
+}
+
 # _cosmic_settings_shortcuts: the `custom` key is one RON map shared by every
 # module and by the user. This module owns only its own entry (Super+Shift+S,
 # cosmic-screenshot): it creates the file when missing or empty, adds its entry
 # to an existing map, and leaves the file alone when that key combination is
 # already bound (to cosmic-screenshot or to anything else: a duplicate key
 # would make the map invalid). Entries of other modules (aura's Alt+S) and of
-# the user are never removed or changed.
+# the user are never removed or changed. A map whose shape is not understood is
+# left untouched with a warning.
 _cosmic_settings_shortcuts() {
   local base="$REPO_ROOT/files/cosmic/$_COSMIC_SHORTCUTS" dest="$HOME/.config/cosmic/$_COSMIC_SHORTCUTS"
-  local content trimmed body tmp rc=0
-  local ws='[[:space:]]*'
-  local re="modifiers:$ws\\[$ws(Super,${ws}Shift|Shift,${ws}Super),?$ws\\],${ws}key:${ws}\"[sS]\""
+  local content trimmed body tmp state rc=0
 
+  _cosmic_writable "$dest" || return 0
   content=""
   [[ -f "$dest" ]] && content="$(cat -- "$dest")"
   trimmed="${content//[[:space:]]/}"
@@ -50,24 +169,27 @@ _cosmic_settings_shortcuts() {
     install_file "$base" "$dest" 0644
     return
   fi
-  if [[ "$content" =~ $re ]]; then
-    if [[ "$content" != *'Spawn("cosmic-screenshot")'* ]]; then
+  if ! state="$(printf '%s\n' "$content" | awk -v mode=scan "$_COSMIC_RON_AWK")"; then
+    log_warn "$dest is not a shortcut map this module understands: not adding the Super+Shift+S screenshot shortcut"
+    return 0
+  fi
+  case "$state" in
+    screenshot) return 0 ;;
+    other)
       log_info "Super+Shift+S is already bound to something else in $dest: leaving it alone"
-    fi
-    return 0
-  fi
-  if [[ "${trimmed:0:1}" != "{" || "${trimmed: -1}" != "}" ]]; then
-    log_warn "$dest is not a recognisable shortcut map: not adding the Super+Shift+S screenshot shortcut"
-    return 0
-  fi
+      return 0
+      ;;
+  esac
 
   # The entries of the seed are the lines between its braces.
   body="$(sed '1d;$d' "$base")"
-  content="${content%"${content##*[![:space:]]}"}"
-  content="${content%\}}"
-  content="${content%"${content##*[![:space:]]}"}"
   tmp="$(mktemp)"
-  printf '%s\n%s\n}\n' "$content" "$body" >"$tmp"
+  if ! printf '%s\n' "$content" | awk -v mode=open "$_COSMIC_RON_AWK" >"$tmp"; then
+    rm -f -- "$tmp"
+    log_warn "$dest is not a shortcut map this module understands: not adding the Super+Shift+S screenshot shortcut"
+    return 0
+  fi
+  printf '%s\n}\n' "$body" >>"$tmp"
   install_file "$tmp" "$dest" 0644 || rc=$?
   rm -f -- "$tmp"
   return "$rc"
@@ -90,6 +212,7 @@ module_apply() {
   for rel in "${files[@]}"; do
     [[ "$rel" == "$_COSMIC_SHORTCUTS" ]] && continue
     dest="$dst/$rel"
+    _cosmic_writable "$dest" || continue
     if [[ " ${_COSMIC_SEED_ONLY[*]} " == *" $rel "* && -e "$dest" ]]; then
       continue
     fi
