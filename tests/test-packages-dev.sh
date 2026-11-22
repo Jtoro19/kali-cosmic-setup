@@ -281,8 +281,11 @@ printf '#!/bin/sh\necho "uv 0.9.0 (old)"\n' >"$BIN/uv"
 printf '#!/bin/sh\necho "uvx 0.9.0 (old)"\n' >"$BIN/uvx"
 chmod +x "$BIN/uv" "$BIN/uvx"
 pd
-[[ "$("$BIN/uv" --version)" == 'uv 0.13.9'* ]] && grep -qx "$UV_URL" "$FAKE_STATE/curl.log" && compgen -G "$BIN/uv.bak.*" >/dev/null
-check "uv: an older installed version is upgraded (the old binary is backed up)" $?
+[[ "$("$BIN/uv" --version)" == 'uv 0.13.9'* ]] && grep -qx "$UV_URL" "$FAKE_STATE/curl.log"
+check "uv: an older installed version is upgraded" $?
+files=("$BIN"/*)
+! compgen -G "$BIN/*.bak.*" >/dev/null && ((${#files[@]} == 4))
+check "uv: the replaced release binary is not backed up (no stale .bak executable on PATH)" $?
 reset_state
 mkdir -p "$BIN"
 printf '#!/bin/sh\necho "uv 0.20.1 (new)"\n' >"$BIN/uv"
@@ -291,6 +294,52 @@ chmod +x "$BIN/uv" "$BIN/uvx"
 pd
 ! grep -qx "$UV_URL" "$FAKE_STATE/curl.log" && [[ "$("$BIN/uv" --version)" == 'uv 0.20.1'* ]]
 check "uv: a newer installed version (0.20.1 > 0.13.9) is not downgraded" $?
+
+# --- version probe: the first dotted number of the output ----------------------
+reset_state
+mkdir -p "$BIN"
+printf '#!/bin/sh\necho "uv 0.13.9 (fixture)"\n' >"$BIN/uv"
+printf '#!/bin/sh\necho "uvx 0.13.9 (fixture)"\n' >"$BIN/uvx"
+printf '#!/bin/sh\necho "v3.7.2"\n' >"$BIN/engram"
+printf '#!/bin/sh\necho "gentle-ai version 4.6.0"\n' >"$BIN/gentle-ai"
+chmod +x "$BIN"/*
+pd
+[[ "$rc" == 0 ]] && ! grep -q 'github.com' "$FAKE_STATE/curl.log"
+check "version probe: 'v3.7.2' and 'gentle-ai version 4.6.0' count as the pinned versions (no download)" $?
+reset_state
+mkdir -p "$BIN"
+printf '#!/bin/sh\necho "gentle-ai version 4.1.0"\n' >"$BIN/gentle-ai"
+chmod +x "$BIN/gentle-ai"
+pd
+[[ "$("$BIN/gentle-ai" --version)" == 'gentle-ai 4.6.0'* ]] && grep -qx "$GA_URL" "$FAKE_STATE/curl.log"
+check "version probe: 'gentle-ai version 4.1.0' is recognised as older and upgraded" $?
+
+# --- the debconf check survives a long output under pipefail --------------------
+reset_state
+export FAKE_DEBCONF_BIG=1
+pd
+pd
+[[ "$rc" == 0 ]] && grep -q 'total changes: 0' "$WORK/out" && ! grep -q 'debconf: code/add-microsoft-repo' "$WORK/out"
+check "debconf: the answer check does not break under pipefail (second run reports 0 changes)" $?
+unset FAKE_DEBCONF_BIG
+
+# --- temp dir cleanup on a fail-fast exit ---------------------------------------
+reset_state
+mkdir -p "$KCS_ROOT/usr/local"
+printf 'not a directory\n' >"$KCS_ROOT/usr/local/bin"
+pd
+[[ "$rc" != 0 && -z "$(ls -A "$TMPDIR")" ]]
+check "cleanup: the temporary download directory is removed when the install step exits" $?
+
+# --- the docker group warning -----------------------------------------------------
+reset_state
+pd
+grep -q 'root-equivalent' "$WORK/out"
+check "docker: the run warns that docker group membership is root-equivalent" $?
+
+# --- README revert row ------------------------------------------------------------
+grep '^| packages-dev ' "$REPO_ROOT/README.md" | grep -q 'docker.socket'
+check "README: the packages-dev revert row stops docker.socket too" $?
 
 # --- code postinst adds its own repo despite the answer: it is cleaned up -------
 reset_state
@@ -303,6 +352,29 @@ pd
 [[ "$rc" == 0 ]] && grep -q 'total changes: 0' "$WORK/out"
 check "vscode: after the cleanup a further run reports total changes: 0" $?
 unset FAKE_CODE_ADDS_REPO
+TG="$KCS_ROOT/etc/apt/trusted.gpg.d/microsoft.gpg"
+reset_state
+mkdir -p "$KCS_ROOT/etc/apt/trusted.gpg.d" "$KCS_ROOT/usr/share/keyrings"
+echo "the admin's own key" >"$TG"
+echo "deb keyring" >"$KCS_ROOT/usr/share/keyrings/microsoft.gpg"
+pd
+[[ "$rc" == 0 && -f "$TG" && "$(<"$TG")" == "the admin's own key" ]] && grep -qi 'leaving it alone' "$WORK/out"
+check "vscode: a different microsoft.gpg in trusted.gpg.d (the admin's file) is kept with a warning" $?
+pd
+grep -q 'total changes: 0' "$WORK/out"
+check "vscode: keeping the admin's file leaves a further run at total changes: 0" $?
+reset_state
+mkdir -p "$KCS_ROOT/etc/apt/trusted.gpg.d"
+ln -s /usr/share/keyrings/microsoft.gpg "$TG"
+pd
+[[ "$rc" == 0 && ! -e "$TG" && ! -L "$TG" ]]
+check "vscode: a symlink microsoft.gpg in trusted.gpg.d is removed" $?
+reset_state
+mkdir -p "$KCS_ROOT/etc/apt/trusted.gpg.d"
+echo "orphan key" >"$TG"
+pd
+[[ "$rc" == 0 && -f "$TG" ]]
+check "vscode: a regular microsoft.gpg without the deb keyring to compare with is kept" $?
 
 # --- a failed update then a re-run: the vendor packages still get their lists ---
 reset_state

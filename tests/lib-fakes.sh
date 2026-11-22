@@ -342,6 +342,12 @@ echo "  greetd/daemon_name: /usr/sbin/greetd"
 if [ "$(cat "$FAKE_STATE/debconf-code" 2>/dev/null)" = false ]; then
   echo "* code/add-microsoft-repo: false"
 fi
+# FAKE_DEBCONF_BIG: a long output after the answer (a reader that stops early
+# would kill this writer with SIGPIPE).
+if [ -n "${FAKE_DEBCONF_BIG:-}" ]; then
+  i=0
+  while [ "$i" -lt 20000 ]; do echo "  padding/question: x"; i=$((i + 1)); done
+fi
 if [ -s "$FAKE_STATE/debconf" ]; then
   echo "* shared/default-x-display-manager: $(cat "$FAKE_STATE/debconf")"
 fi

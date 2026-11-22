@@ -108,7 +108,11 @@ _pd_vendor_packages() {
 # debconf says false. We manage the repo ourselves (Signed-By, pin), so answer
 # false BEFORE every install or upgrade of the package.
 _pd_preseed_code() {
-  if LC_ALL=C debconf-show code 2>/dev/null | grep -q 'code/add-microsoft-repo: false'; then
+  # Capture first: a reader that stops at the first match would SIGPIPE the
+  # writer, and pipefail would turn that into a failed check.
+  local answers
+  answers="$(LC_ALL=C debconf-show code 2>/dev/null || true)"
+  if [[ "$answers" == *'code/add-microsoft-repo: false'* ]]; then
     return 0
   fi
   log_change "debconf: code/add-microsoft-repo = false (the deb must not add its own repo or key)"
@@ -118,15 +122,20 @@ _pd_preseed_code() {
 # _pd_code_untrust: with the answer preseeded the deb adds nothing (checked on
 # the VM). Should a future deb still drop Microsoft's key into trusted.gpg.d
 # (trusted for every repository, wider than our Signed-By and pin), remove it,
-# like the Brave case in the packages module. The keyring a deb may leave in
-# /usr/share/keyrings is inert without a sources file that names it, and other
-# Microsoft repos may use it, so it is left alone.
+# like the Brave case in the packages module: only a symlink or a file
+# byte-identical to the keyring the deb installs in /usr/share/keyrings is the
+# deb's; any other file there is the admin's and is kept with a warning. The
+# keyring in /usr/share/keyrings is inert without a sources file that names it,
+# and other Microsoft repos may use it, so it is left alone.
 _pd_code_untrust() {
-  local f
+  local f ring
   f="$(rootpath /etc/apt/trusted.gpg.d/microsoft.gpg)"
-  if [[ -e "$f" || -L "$f" ]]; then
+  ring="$(rootpath /usr/share/keyrings/microsoft.gpg)"
+  if [[ -L "$f" ]] || { [[ -f "$f" && -f "$ring" ]] && cmp -s -- "$f" "$ring"; }; then
     log_change "remove $f (global apt trust that the code deb adds; Signed-By and the pin stay)"
     run_sudo rm -f -- "$f"
+  elif [[ -e "$f" ]]; then
+    log_warn "$f is not the code deb's keyring: leaving it alone (it trusts Microsoft's key for every repository)"
   fi
 }
 
@@ -135,16 +144,21 @@ _pd_sha256_ok() {
   printf '%s  %s\n' "$2" "$1" | sha256sum -c --status
 }
 
-# _pd_bin_version <path>: the version a binary reports ("<name> <version> ...").
+# _pd_bin_version <path>: the version a binary reports: the first dotted number
+# of its --version output ("uv 0.13.9", "gentle-ai version 4.6.0", "v3.7.2").
 _pd_bin_version() {
+  local out
   [[ -x "$1" ]] || return 0
-  LC_ALL=C "$1" --version 2>/dev/null | awk 'NR == 1 { print $2 }' || true
+  out="$(LC_ALL=C "$1" --version 2>/dev/null || true)"
+  grep -Eom1 '[0-9]+(\.[0-9]+)+' <<<"$out" || true
 }
 
 # _pd_release <name> <version> <url> <sha256> <archive> <member=bin>...: install
 # the binaries of a pinned GitHub release into /usr/local/bin. The first binary
 # is the version probe. Skipped when it reports the pinned version or newer, and
-# every binary exists, so a newer one is never downgraded. A PACKAGES_DEV_<NAME>_SHA256
+# every binary exists, so a newer one is never downgraded. A replaced binary is
+# not backed up: it is reproducible from the pinned release, and a .bak
+# executable in /usr/local/bin would only be a stale program on PATH. A PACKAGES_DEV_<NAME>_SHA256
 # in the environment replaces the pinned checksum only when KCS_TEST is set (the
 # tests serve fixtures); a real run always uses the pinned value.
 _pd_release() {
@@ -172,6 +186,7 @@ _pd_release() {
   fi
   ensure_packages curl ca-certificates || return 1
   dir="$(mktemp -d)"
+  _PD_TMP="$dir"
   download_verified "$url" "$dir/$archive" "$sum" || rc=$?
   if ((rc == 0)); then
     # Verify again right before extracting (the directory is user-owned).
@@ -185,10 +200,11 @@ _pd_release() {
   if ((rc == 0)); then
     local i
     for i in "${!members[@]}"; do
-      install_file "$dir/${members[$i]}" "${dests[$i]}" 0755 || rc=$?
+      install_file "$dir/${members[$i]}" "${dests[$i]}" 0755 nobackup || rc=$?
     done
   fi
   rm -rf -- "$dir"
+  _PD_TMP=""
   if ((rc != 0)); then
     log_error "$name $version was not installed (exit $rc)"
   fi
@@ -227,11 +243,24 @@ _pd_services() {
   ensure_system_unit_enabled docker.service || return 1
   # Both groups take effect after the next login. docker is root-equivalent
   # (see the spec). plugdev is the group of Kali's android-udev-rules.
+  if ! id -nG "$USER" | tr ' ' '\n' | grep -qx docker; then
+    log_warn "membership in the docker group is root-equivalent (anyone in it can start a privileged container); remove it with: sudo gpasswd -d $USER docker"
+  fi
   ensure_user_in_group docker || return 1
   ensure_user_in_group plugdev
 }
 
+# _pd_cleanup: EXIT trap of this module. A fail-fast helper (run_sudo) ends the
+# module with exit, so the temp directory of a release download is removed here.
+_pd_cleanup() {
+  if [[ -n "${_PD_TMP:-}" ]]; then
+    rm -rf -- "$_PD_TMP"
+  fi
+}
+
 module_apply() {
+  _PD_TMP=""
+  trap _pd_cleanup EXIT
   install_package_list dev || return 1
   _pd_vendor_packages || return 1
   _pd_release_tools || return 1

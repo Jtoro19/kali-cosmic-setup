@@ -155,10 +155,12 @@ backup_file() {
   _priv_run "$path" cp -p -- "$path" "$path.bak.$ts"
 }
 
-# install_file <src> <dest> [mode]: idempotent file install with backup. Sets
-# FILE_CHANGED to 1 when it changed (or would change) the file, else 0.
+# install_file <src> <dest> [mode] [nobackup]: idempotent file install with
+# backup (the 4th argument "nobackup" skips it, for reproducible artifacts such
+# as verified release binaries whose .bak copy would only be a stale executable).
+# Sets FILE_CHANGED to 1 when it changed (or would change) the file, else 0.
 install_file() {
-  local src="$1" dest="$2" mode="${3:-0644}"
+  local src="$1" dest="$2" mode="${3:-0644}" nobackup="${4:-}"
   FILE_CHANGED=0
   if [[ ! -f "$src" ]]; then
     log_error "install_file: source not found: $src"
@@ -169,7 +171,9 @@ install_file() {
   fi
   FILE_CHANGED=1
   log_change "install $dest"
-  backup_file "$dest"
+  if [[ "$nobackup" != "nobackup" ]]; then
+    backup_file "$dest"
+  fi
   _priv_run "$dest" mkdir -p -- "$(dirname "$dest")"
   _priv_run "$dest" install -m "$mode" -- "$src" "$dest"
 }

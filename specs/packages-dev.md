@@ -90,7 +90,9 @@ Releases: uv 0.13.9, engram 3.7.2, gentle-ai 4.6.0.
   nothing, and `apt-cache policy code` shows the Microsoft origin at 500. As a
   safety net (the Brave case, see `specs/packages.md`) the module removes
   `/etc/apt/trusted.gpg.d/microsoft.gpg` if a future deb creates it (global
-  trust, wider than `Signed-By` plus the pin). A keyring left in
+  trust, wider than `Signed-By` plus the pin), but only when it is a symlink or
+  byte-identical to the keyring the deb installs in `/usr/share/keyrings`; any
+  other file there is the admin's and is kept with a warning. A keyring left in
   `/usr/share/keyrings` is inert and may serve other Microsoft repos: not touched.
 - **Claude Code: Anthropic's signed apt repo.** The official documentation
   (https://code.claude.com/docs/en/setup, the former docs.anthropic.com page
@@ -135,8 +137,7 @@ Releases: uv 0.13.9, engram 3.7.2, gentle-ai 4.6.0.
 - **Release idempotency.** Each tool is skipped when `/usr/local/bin/<tool>
   --version` reports the pinned version or a newer one (`dpkg
   --compare-versions ... ge`) and every binary exists, so a newer one is never
-  downgraded; an older one is upgraded (the replaced binary is backed up as
-  `.bak.<timestamp>`). The archive is verified by `download_verified`, again
+  downgraded; an older one is upgraded. Decision: the replaced binary is NOT backed up, because it is reproducible from the pinned release and a `.bak` executable in `/usr/local/bin` would only be a stale program on PATH (`install_file ... nobackup`). The version is the first dotted number of the `--version` output (`uv 0.13.9`, `gentle-ai version 4.6.0`, `v3.7.2`). The archive is verified by `download_verified`, again
   right before it is unpacked, and only the named members are extracted
   (`tar --no-same-owner`).
 - **Test-only override**: `PACKAGES_DEV_UV_SHA256`, `PACKAGES_DEV_ENGRAM_SHA256`
@@ -152,7 +153,8 @@ Releases: uv 0.13.9, engram 3.7.2, gentle-ai 4.6.0.
 - **docker group is root-equivalent.** Anyone in `docker` can start a
   privileged container and read or write any file as root. The module adds the
   invoking user (opt-in module, the user asked for Docker); the membership takes
-  effect after the next login. Remove it with `sudo gpasswd -d $USER docker`.
+  effect after the next login. The module logs a warning when it is about to
+  add the membership. Remove it with `sudo gpasswd -d $USER docker`.
 - **plugdev, not adbusers.** eos adds the user to `adbusers`. Kali's
   `android-udev-rules` (`/usr/lib/udev/rules.d/51-android.rules`) uses
   `GROUP="plugdev"` plus `TAG+="uaccess"` and no `adbusers` group exists, so the
@@ -210,7 +212,7 @@ sudo apt-get update
 
 Data stays: `/var/lib/docker` and `/var/lib/mysql` are not removed by purge
 (`apt-get purge` of mariadb-server may ask; back up first). Backups of replaced
-files are `<file>.bak.<timestamp>` next to them.
+config files are `<file>.bak.<timestamp>` next to them (release binaries get none).
 
 ## Verification
 
