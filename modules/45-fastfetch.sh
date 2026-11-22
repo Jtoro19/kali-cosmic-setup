@@ -41,6 +41,8 @@ _ff_net_timeout() { echo "${KCS_NET_TIMEOUT:-300}"; }
 _ff_max_file() { echo "${FASTFETCH_MAX_FILE_BYTES:-5242880}"; }
 _ff_max_source_kb() { echo "${FASTFETCH_MAX_SOURCE_KB:-524288}"; }
 _ff_max_files() { echo "${FASTFETCH_MAX_FILES:-400}"; }
+# _ff_source_kb <dir>: disk usage in KB of a checkout, without .git.
+_ff_source_kb() { du -sk --exclude=.git -- "$1" | cut -f1; }
 
 # The shell block (bash and zsh compatible). The legacy snippet that older setups
 # pasted into the rc file is kept verbatim for its removal; the managed block adds
@@ -104,7 +106,7 @@ _fastfetch_fetch_source() {
   local prefix="$1" repo="$2" commit="$3" subdir="$4" lfs="$5"
   local images="$6" bad="$7" tmp="$8"
   local clone="$tmp/$prefix" stage="$tmp/stage-$prefix" incoming="$images/../.incoming-$prefix"
-  local f name fmt dest head kb n=0 moved=0 rejected=0 complete=1 marker
+  local f name fmt head kb n=0 moved=0 rejected=0 collisions=0 complete=1 marker
   local limit
   limit="$(_ff_net_timeout)"
 
@@ -114,13 +116,16 @@ _fastfetch_fetch_source() {
   if ! timeout -k 10 "$limit" git -C "$clone" fetch -q --depth 1 origin "$commit" </dev/null; then
     return 1
   fi
-  git -C "$clone" checkout -q FETCH_HEAD || return 1
+  # LFS pointers stay pointers here: the size is checked before anything is pulled.
+  if ! GIT_LFS_SKIP_SMUDGE=1 timeout -k 10 "$limit" git -C "$clone" checkout -q FETCH_HEAD </dev/null; then
+    return 1
+  fi
   head="$(git -C "$clone" rev-parse HEAD)"
   if [[ "$head" != "$commit" ]]; then
     log_warn "$repo: the checkout is ${head:-unknown}, not the pinned $commit"
     return 1
   fi
-  kb="$(du -sk --exclude=.git -- "$clone" | cut -f1)"
+  kb="$(_ff_source_kb "$clone")"
   if ((kb > $(_ff_max_source_kb))); then
     log_warn "$repo at the pinned commit is ${kb} KB (limit $(_ff_max_source_kb) KB)"
     return 1
@@ -130,6 +135,12 @@ _fastfetch_fetch_source() {
     if ! timeout -k 10 "$limit" git -C "$clone" lfs pull </dev/null; then
       log_warn "git lfs pull failed for $prefix; LFS pointers are rejected by validation and $prefix is retried on the next run"
       complete=0
+    else
+      kb="$(_ff_source_kb "$clone")"
+      if ((kb > $(_ff_max_source_kb))); then
+        log_warn "$repo is ${kb} KB after git lfs pull (limit $(_ff_max_source_kb) KB): skipping $prefix"
+        return 1
+      fi
     fi
   fi
 
@@ -143,6 +154,10 @@ _fastfetch_fetch_source() {
     name="$prefix-$(basename -- "$f")"
     name="${name//[^A-Za-z0-9._-]/_}"
     [[ -e "$images/$name" ]] && continue
+    if [[ -e "$stage/$name" || -e "$bad/$name" ]]; then
+      collisions=$((collisions + 1))
+      continue
+    fi
     if (($(stat -c %s -- "$f") > $(_ff_max_file))); then
       log_warn "$prefix: $(basename -- "$f") is larger than $(_ff_max_file) bytes: not used"
       continue
@@ -159,6 +174,10 @@ _fastfetch_fetch_source() {
     \( -iname '*.png' -o -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.webp' \) \
     -not -path '*/.git/*' -not -iname 'loli*' -print0 2>/dev/null | sort -z)
 
+  if ((collisions > 0)); then
+    log_warn "$prefix: $collisions file(s) skipped: basename collision with an earlier file (the first is kept)"
+  fi
+
   # Move the validated files in (same filesystem as the pool, so each rename is
   # atomic); an interrupted move leaves no marker and the next run completes it.
   rm -rf -- "$incoming"
@@ -166,7 +185,17 @@ _fastfetch_fetch_source() {
   for f in "$stage"/*; do
     [[ -f "$f" ]] || continue
     name="$(basename -- "$f")"
-    cp -- "$f" "$incoming/$name" && mv -n -- "$incoming/$name" "$images/$name" && moved=$((moved + 1))
+    if [[ -e "$images/$name" ]]; then
+      continue
+    fi
+    # mv -n returns 0 even when it skips: the file must really be there.
+    cp -- "$f" "$incoming/$name" && mv -n -- "$incoming/$name" "$images/$name" 2>/dev/null
+    if [[ -f "$images/$name" && ! -e "$incoming/$name" ]]; then
+      moved=$((moved + 1))
+    else
+      complete=0
+      log_warn "$prefix: could not move $name into the pool"
+    fi
   done
   rm -rf -- "$incoming"
   if ((complete)); then
@@ -181,6 +210,8 @@ _fastfetch_fetch_source() {
   else
     log_info "fastfetch: $prefix: $moved image(s) added, $rejected rejected"
   fi
+  # A failed move is retried on the next run (no marker); it is not a change.
+  ((complete)) || ((moved > 0)) || return 3
 }
 
 # _fastfetch_images: build the image pool, source by source. Never fails the
@@ -189,7 +220,7 @@ _fastfetch_images() {
   local images="$HOME/.config/fastfetch/images"
   local bad="$HOME/.config/fastfetch/bad"
   local cache="${XDG_CACHE_HOME:-$HOME/.cache}/kali-cosmic-setup"
-  local tmp="" entry prefix repo commit subdir lfs url
+  local tmp="" entry prefix repo commit subdir lfs url rc
   local -a pending=()
 
   if [[ "${FASTFETCH_SKIP_IMAGES:-0}" == "1" ]]; then
@@ -234,9 +265,13 @@ _fastfetch_images() {
   trap "rm -rf -- '$tmp'" EXIT
   for entry in "${pending[@]}"; do
     IFS='|' read -r prefix repo commit subdir lfs <<<"$entry"
-    if _fastfetch_fetch_source "$prefix" "$repo" "$commit" "$subdir" "$lfs" \
-      "$images" "$bad" "$tmp"; then
+    rc=0
+    _fastfetch_fetch_source "$prefix" "$repo" "$commit" "$subdir" "$lfs" \
+      "$images" "$bad" "$tmp" || rc=$?
+    if ((rc == 0)); then
       log_change "fetch images for $prefix"
+    elif ((rc == 3)); then
+      log_warn "fastfetch: $prefix: no marker written, the next run tries again"
     else
       log_warn "could not fetch $repo at the pinned commit $commit (gone, moved, too large or offline); skipping $prefix"
     fi

@@ -30,7 +30,7 @@ BAD="$HOME_DIR/.config/fastfetch/bad"
 # Every call is logged with GIT_TERMINAL_PROMPT.
 cat >"$WORK/bin/git" <<'EOS'
 #!/bin/sh
-echo "git $* [prompt=${GIT_TERMINAL_PROMPT:-unset}]" >>"$FAKE_STATE/git.log"
+echo "git $* [prompt=${GIT_TERMINAL_PROMPT:-unset}] [lfsskip=${GIT_LFS_SKIP_SMUDGE:-unset}]" >>"$FAKE_STATE/git.log"
 if [ "$1" = init ]; then
   for a in "$@"; do dest="$a"; done
   mkdir -p "$dest/.git"
@@ -43,6 +43,7 @@ if [ "$1" = -C ]; then
     remote) echo "$4" >"$d/.url"; exit 0 ;;
     lfs)
       if [ "$2" = pull ] && [ -n "${FAKE_GIT_LFS_FAIL:-}" ]; then exit 1; fi
+      if [ "$2" = pull ] && [ -n "${FAKE_GIT_LFS_GROW:-}" ]; then head -c "$FAKE_GIT_LFS_GROW" /dev/zero >"$d/grown.bin"; fi
       exit 0
       ;;
     fetch)
@@ -89,7 +90,15 @@ case "$fmt" in PNG) tag=PNG ;; JPEG) tag=JPG ;; WEBP) tag=WEBP ;; *) exit 1 ;; e
 grep -q BAD "$f" && exit 1
 cp "$f" "${out#*:}"
 EOS
-chmod +x "$WORK/bin/git" "$WORK/bin/magick"
+# mv: FAKE_MV_NOOP=1 does nothing and returns 0 (what `mv -n` does when it skips),
+# FAKE_MV_FAIL=1 fails; otherwise the real mv.
+cat >"$WORK/bin/mv" <<'EOS'
+#!/bin/sh
+[ -n "${FAKE_MV_NOOP:-}" ] && exit 0
+[ -n "${FAKE_MV_FAIL:-}" ] && exit 1
+exec /bin/mv "$@"
+EOS
+chmod +x "$WORK/bin/git" "$WORK/bin/magick" "$WORK/bin/mv"
 
 failures=0
 check() { # check <description> <status>
@@ -301,6 +310,30 @@ echo oldsha >"$WORK/state-home/kali-cosmic-setup/fastfetch/thunder.commit"
 ff
 [[ "$(grep -c ' fetch ' "$FAKE_STATE/git.log")" == 1 && "$(<"$WORK/state-home/kali-cosmic-setup/fastfetch/thunder.commit")" == "$sha_old" ]]
 check "markers: a moved pin refetches only that source" $?
+
+# --- review fixes (M9b): pool move failures, LFS, name collisions -------------------------
+reset_state
+FAKE_MV_FAIL=1 ff
+[[ "$rc" == 0 && ! -d "$WORK/state-home/kali-cosmic-setup/fastfetch" ]] && ! compgen -G "$IMG/*" >/dev/null && ! grep -q 'change.*fetch images for' "$WORK/out"
+check "pool move failure: no marker, not counted as a change, exit 0 (retried next run)" $?
+reset_state
+FAKE_MV_NOOP=1 ff
+[[ "$rc" == 0 && ! -d "$WORK/state-home/kali-cosmic-setup/fastfetch" ]] && grep -q 'no new images\|0 image(s) added' "$WORK/out" && ! grep -q '[1-9][0-9]* image(s) added' "$WORK/out"
+check "mv -n that skips with status 0: nothing is counted as moved and no marker is written" $?
+reset_state
+ff
+grep ' checkout' "$FAKE_STATE/git.log" | grep -q 'lfsskip=1' && ! grep ' checkout' "$FAKE_STATE/git.log" | grep -qv 'lfsskip=1'
+check "lfs: every checkout runs with GIT_LFS_SKIP_SMUDGE=1" $?
+reset_state
+FASTFETCH_MAX_SOURCE_KB=500 FAKE_GIT_LFS_GROW=1500000 ff
+[[ "$rc" == 0 ]] && ! compgen -G "$IMG/mahe-*" >/dev/null && compgen -G "$IMG/ronin-*" >/dev/null && grep -q 'mahe.*KB\|Maheswara660.*KB' "$WORK/out" && [[ ! -e "$WORK/state-home/kali-cosmic-setup/fastfetch/mahe.commit" ]]
+check "lfs: the size cap is checked again after git lfs pull (a source that grows past it is skipped, no marker)" $?
+reset_state
+ff
+[[ "$(grep -c 'basename collision' "$WORK/out")" -ge 3 ]] && [[ "$(grep -c 'ronin.*basename collision' "$WORK/out")" == 1 ]]
+check "collisions: same basenames in one source are skipped, one warning per source" $?
+[[ "$(find "$IMG" -name 'ronin-*' | wc -l)" == 4 ]]
+check "collisions: the first file of a name wins, the pool has one file per name" $?
 
 # --- the shell snippet ---------------------------------------------------------------------------
 reset_state

@@ -120,7 +120,7 @@ _clip_unit() {
     # first: no early-exit grep on a pipe under pipefail.)
     env_now="$(systemctl --user show-environment 2>/dev/null || true)"
     if ! grep -qx 'COSMIC_DATA_CONTROL_ENABLED=1' <<<"$env_now"; then
-      log_warn "COSMIC_DATA_CONTROL_ENABLED=1 is not in this session's user environment yet: log in again to start it ( is enabled and starts with your next graphical session)"
+      log_warn "COSMIC_DATA_CONTROL_ENABLED=1 is not in this session's user environment yet: log in again to start it (the unit is enabled and starts with your next graphical session)"
     elif ! systemctl --user is-active --quiet "$name" >/dev/null 2>&1; then
       log_change "start user unit: $name"
       run systemctl --user start "$name"

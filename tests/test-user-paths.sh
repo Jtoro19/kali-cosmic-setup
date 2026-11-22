@@ -209,6 +209,19 @@ h "ensure_line '$L' 'another plain line'" >/dev/null 2>&1
 grep -qx 'another plain line' "$L"
 check "ensure_line: a line without = is appended as before" $?
 
+printf 'axb=2\n' >"$L"
+h "ensure_line '$L' 'a.b=1'" >"$WORK/o" 2>&1
+[[ "$(cat "$L")" == $'axb=2\na.b=1' ]] && ! grep -q '\[warn\]' "$WORK/o"
+check "ensure_line: a line whose left side is not a valid KEY (a.b) is a plain line, the dot is not a regex wildcard" $?
+printf 'export FOO=2\n' >"$L"
+h "ensure_line '$L' 'export FOO=1'" >"$WORK/o" 2>&1
+[[ "$(cat "$L")" == $'export FOO=2\nexport FOO=1' ]]
+check "ensure_line: only a strict KEY=value line has the keep-the-other-value rule (export FOO=1 is a plain line)" $?
+printf '_A1=2\n' >"$L"
+h "ensure_line '$L' '_A1=1'" >"$WORK/o" 2>&1
+[[ "$(cat "$L")" == '_A1=2' ]] && grep -q '\[warn\]' "$WORK/o"
+check "ensure_line: a strict KEY with a digit and an underscore keeps another value" $?
+
 # --- timeout -k on gsettings and dbus-run-session -----------------------------
 grep -q 'timeout -k' <(sed -n '/^_gsettings_get/,/^}/p;/^_gsettings_run/,/^}/p' "$REPO_ROOT/lib/common.sh") && ! grep -q 'timeout "\${KCS_GSETTINGS_TIMEOUT:-20}" ' "$REPO_ROOT/lib/common.sh"
 check "gsettings calls use timeout -k (a stuck gsettings or dbus-run-session is killed)" $?

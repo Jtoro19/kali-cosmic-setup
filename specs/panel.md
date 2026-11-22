@@ -65,6 +65,14 @@ Every system applet id exists on COSMIC 1.11 (checked on the VM:
    directory owned by someone else is skipped with a warning (never written
    through sudo) and a symlink is followed only into `$HOME`.
 
+7. **The layout replaces an existing one (final decision).** BRIEF targets a
+   fresh system and the definition of done requires the reference layout, so an
+   existing `entries` and `plugins_wings` / `plugins_center` are replaced after a
+   `<key>.bak.<timestamp>` backup, and the Dock is dropped. A user who customised
+   the panel and does not want this must not run the module (`--skip panel`) or
+   restore the `.bak` files; the opt-out is "restore the .bak" (see Revert). Review
+   finding W4 of the M7b+M8b+M9 review was settled this way, not by merging.
+
 ## Hardware detection
 
 None. `output: All` is the shipped default, so no output name is needed.

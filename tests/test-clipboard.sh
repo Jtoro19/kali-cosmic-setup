@@ -181,6 +181,8 @@ FAKE_USER_ENV='PATH=/usr/bin' clip
 [[ "$rc" == 0 ]] && grep -qx 'wl-clip-persist.service' "$FAKE_STATE/user-enabled" && ! grep -qx 'wl-clip-persist.service' "$FAKE_STATE/user-active" &&
   ! grep -q -- '--user start wl-clip-persist' "$FAKE_STATE/systemctl.log" && grep -q 'log in again to start it' "$WORK/out"
 check "env check: without COSMIC_DATA_CONTROL_ENABLED=1 in the user manager the unit is enabled, not started, and the run says to log in again" $?
+! grep -qF '( is enabled' "$WORK/out" && grep -q 'COSMIC_DATA_CONTROL_ENABLED=1 is not in this session.s user environment yet: log in again to start it (the unit is enabled' "$WORK/out"
+check "env check: the message is well formed (no stray '( is enabled' fragment)" $?
 reset_state
 printf 'graphical-session.target\n' >"$FAKE_STATE/user-active"
 clip

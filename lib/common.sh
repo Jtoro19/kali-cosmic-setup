@@ -327,9 +327,14 @@ ensure_line() {
     return 0
   fi
   # KEY=value with an existing KEY= line of another value: keep it, no duplicate.
-  if [[ "$line" == [A-Za-z_]*=* && -f "$file" ]] && grep -q -- "^${line%%=*}=" "$file"; then
-    log_warn "$file already sets ${line%%=*} to another value: leaving it (wanted: $line)"
-    return 0
+  # Only a strict KEY= (shell variable name) counts as a key, and it is matched as
+  # a fixed string at the start of a line (no regex).
+  if [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)= && -f "$file" ]]; then
+    local key="${BASH_REMATCH[1]}"
+    if awk -v k="$key=" 'index($0, k) == 1 { found = 1 } END { exit !found }' "$file"; then
+      log_warn "$file already sets $key to another value: leaving it (wanted: $line)"
+      return 0
+    fi
   fi
   log_change "add line to $file: $line"
   backup_file "$file"
