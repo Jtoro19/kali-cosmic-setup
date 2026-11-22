@@ -497,3 +497,46 @@ ensure_user_in_group() {
   log_change "add $USER to group $group (re-login needed)"
   run_sudo usermod -aG "$group" "$USER"
 }
+
+# --- Hardware detection -----------------------------------------------------
+
+# detect_cpu_vendor: print amd, intel or unknown (from /proc/cpuinfo, which
+# KCS_ROOT can redirect in tests).
+detect_cpu_vendor() {
+  local vendor="" info
+  info="$(rootpath /proc/cpuinfo)"
+  if [[ -r "$info" ]]; then
+    vendor="$(grep -m1 '^vendor_id' "$info" || true)"
+  fi
+  case "$vendor" in
+    *AuthenticAMD*) printf 'amd\n' ;;
+    *GenuineIntel*) printf 'intel\n' ;;
+    *) printf 'unknown\n' ;;
+  esac
+}
+
+# detect_gpu_vendors: print the space-separated vendors of the display devices
+# (amd, intel, nvidia, always in that order), by PCI vendor id: 1002, 8086,
+# 10de. Empty when there is no such GPU (a VM's virtio GPU is 1af4) or lspci
+# is missing.
+detect_gpu_vendors() {
+  local id amd=0 intel=0 nvidia=0
+  local -a out=()
+  if ! command -v lspci >/dev/null 2>&1; then
+    printf '\n'
+    return 0
+  fi
+  while IFS= read -r id; do
+    case "$id" in
+      '[1002:'*) amd=1 ;;
+      '[8086:'*) intel=1 ;;
+      '[10de:'*) nvidia=1 ;;
+      *) ;;
+    esac
+  done < <(lspci -nn 2>/dev/null | grep -E 'VGA|3D|Display' |
+    grep -Eo '\[[0-9a-fA-F]{4}:[0-9a-fA-F]{4}\]' | tr 'A-F' 'a-f' || true)
+  if ((amd)); then out+=(amd); fi
+  if ((intel)); then out+=(intel); fi
+  if ((nvidia)); then out+=(nvidia); fi
+  printf '%s\n' "${out[*]:-}"
+}
