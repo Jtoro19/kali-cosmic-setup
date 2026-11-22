@@ -747,6 +747,125 @@ ensure_ini_line() {
   rm -f -- "$tmp"
 }
 
+# --- Login shell and legacy text ---------------------------------------------
+
+# login_shell_name: the name (basename) of the invoking user's login shell, from
+# the passwd database (`getent passwd`), not from $SHELL. KCS_LOGIN_SHELL
+# replaces it only when KCS_TEST is set (tests simulate zsh and bash).
+login_shell_name() {
+  local user="${USER:-$(id -un)}" shell=""
+  if [[ -n "${KCS_TEST:-}" && -n "${KCS_LOGIN_SHELL:-}" ]]; then
+    shell="$KCS_LOGIN_SHELL"
+  else
+    shell="$(getent passwd "$user" 2>/dev/null | cut -d: -f7)" || true
+  fi
+  printf '%s\n' "${shell##*/}"
+}
+
+# login_rc_file: print the interactive rc file of the invoking user's login
+# shell: ~/.zshrc for zsh, ~/.bashrc for bash. Any other shell (or none found)
+# warns and returns 1, so the caller skips its shell block. The shell itself is
+# never changed.
+login_rc_file() {
+  local name
+  name="$(login_shell_name)"
+  case "$name" in
+    zsh) printf '%s\n' "$HOME/.zshrc" ;;
+    bash) printf '%s\n' "$HOME/.bashrc" ;;
+    *)
+      log_warn "login shell '${name:-unknown}' is not zsh or bash: not writing a shell block (this repo never changes your shell)"
+      return 1
+      ;;
+  esac
+}
+
+# remove_line <file> <exact-line> [preceding-line]: remove every occurrence of
+# the exact line found OUTSIDE kali-cosmic-setup managed blocks. When
+# preceding-line is given, the line immediately above is removed too if it
+# matches exactly. Backs up first; counts as one change; dry-run aware.
+remove_line() {
+  local file="$1" line="$2" prev="${3:-}" tmp mode
+  [[ -f "$file" ]] || return 0
+  tmp="$(mktemp)"
+  LINE="$line" PREV="$prev" awk '
+    BEGIN { line = ENVIRON["LINE"]; prev = ENVIRON["PREV"] }
+    /^# >>> kali-cosmic-setup:/ { inb = 1 }
+    { n++; txt[n] = $0; blk[n] = inb }
+    /^# <<< kali-cosmic-setup:/ { inb = 0 }
+    END {
+      for (i = 1; i <= n; i++) del[i] = 0
+      for (i = 1; i <= n; i++) {
+        if (!blk[i] && txt[i] == line) {
+          del[i] = 1
+          if (prev != "" && i > 1 && !blk[i-1] && txt[i-1] == prev) del[i-1] = 1
+        }
+      }
+      for (i = 1; i <= n; i++) if (!del[i]) print txt[i]
+    }
+  ' "$file" >"$tmp"
+  if cmp -s -- "$file" "$tmp"; then
+    rm -f -- "$tmp"
+    return 0
+  fi
+  mode="$(stat -c %a -- "$file")"
+  log_change "remove legacy line from $file: $line"
+  backup_file "$file"
+  _priv_run "$file" install -m "$mode" -- "$tmp" "$file"
+  rm -f -- "$tmp"
+}
+
+# remove_exact_block <file> <multiline-text>: remove the first exact contiguous
+# occurrence of the given lines found OUTSIDE kali-cosmic-setup managed blocks.
+# Other occurrences are kept. Backs up first; counts as one change; dry-run
+# aware. Does nothing when the file or the text is missing.
+remove_exact_block() {
+  local file="$1" text="$2" tmp mode
+  [[ -f "$file" && -n "$text" ]] || return 0
+  tmp="$(mktemp)"
+  TEXT="$text" awk '
+    BEGIN { m = split(ENVIRON["TEXT"], pat, "\n") }
+    /^# >>> kali-cosmic-setup:/ { inb = 1 }
+    { n++; txt[n] = $0; blk[n] = inb }
+    /^# <<< kali-cosmic-setup:/ { inb = 0 }
+    END {
+      start = 0
+      for (i = 1; i + m - 1 <= n && !start; i++) {
+        ok = 1
+        for (j = 1; j <= m; j++) {
+          if (blk[i+j-1] || txt[i+j-1] != pat[j]) { ok = 0; break }
+        }
+        if (ok) start = i
+      }
+      for (i = 1; i <= n; i++) {
+        if (start && i >= start && i < start + m) continue
+        print txt[i]
+      }
+    }
+  ' "$file" >"$tmp"
+  if cmp -s -- "$file" "$tmp"; then
+    rm -f -- "$tmp"
+    return 0
+  fi
+  mode="$(stat -c %a -- "$file")"
+  log_change "remove legacy block from $file: ${text%%$'\n'*} ..."
+  backup_file "$file"
+  _priv_run "$file" install -m "$mode" -- "$tmp" "$file"
+  rm -f -- "$tmp"
+}
+
+# user_systemd_ready: true when `systemctl --user` can reach the invoking user's
+# manager (a graphical or lingering session). Points XDG_RUNTIME_DIR at
+# /run/user/<uid> when it is unset (SSH without pam_systemd). Callers skip the
+# enable/start of a user unit when this is false (the unit files are still
+# written) and say so.
+user_systemd_ready() {
+  if [[ -z "${XDG_RUNTIME_DIR:-}" && -d "/run/user/$(id -u)" ]]; then
+    XDG_RUNTIME_DIR="/run/user/$(id -u)"
+    export XDG_RUNTIME_DIR
+  fi
+  systemctl --user show-environment >/dev/null 2>&1
+}
+
 # --- GSettings --------------------------------------------------------------
 
 # _GSETTINGS_PREFIX: command words that put gsettings on a session bus, set by

@@ -236,6 +236,35 @@ echo "$*" >>"$FAKE_STATE/systemctl.log"
 # those commands fail (full command line, pipe separated). Every fake logs its
 # call first and only then fails, so a failed call still shows in the logs.
 case "|${FAKE_FAIL:-}|" in *"|systemctl $*|"*) exit 1 ;; esac
+# `systemctl --user ...`: the user manager. FAKE_NO_USER_BUS=1 means there is none
+# (show-environment fails). State: $FAKE_STATE/user-enabled and user-active;
+# `enable --now` also marks the unit active.
+if [ "$1" = "--user" ]; then
+  shift
+  ucmd="$1"
+  shift
+  case "$ucmd" in
+    show-environment) [ -n "${FAKE_NO_USER_BUS:-}" ] && exit 1; exit 0 ;;
+    is-enabled | is-active)
+      for a in "$@"; do unit="$a"; done
+      f=user-enabled
+      [ "$ucmd" = is-active ] && f=user-active
+      grep -qx -- "$unit" "$FAKE_STATE/$f" 2>/dev/null
+      exit $?
+      ;;
+    enable)
+      now=0
+      for u in "$@"; do [ "$u" = "--now" ] && now=1; done
+      for u in "$@"; do
+        case "$u" in -*) continue ;; esac
+        echo "$u" >>"$FAKE_STATE/user-enabled"
+        [ "$now" = 1 ] && echo "$u" >>"$FAKE_STATE/user-active"
+      done
+      exit 0
+      ;;
+    *) exit 0 ;;
+  esac
+fi
 sysd="${KCS_ROOT:-}/etc/systemd/system"
 dm="$sysd/display-manager.service"
 cmd="$1"
