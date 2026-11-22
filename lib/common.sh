@@ -1119,3 +1119,168 @@ ensure_gsetting() {
     log_warn "gsettings $schema $key reads ${_GS_VALUE:-nothing} after the set: the value did not persist (is a dconf service running for this session?)"
   fi
 }
+
+# --- COSMIC custom shortcuts ---------------------------------------------------
+
+# _COSMIC_RON_AWK: a small reader for the `custom` shortcut map, a RON map of
+# `(modifiers: [...], key: "x", description: ...): Action,` entries. It skips
+# // comments and strings, accepts any field order, and understands only that
+# shape: anything else (a block comment, unbalanced brackets, an entry without a
+# key, a missing comma) ends with status 2, "not understood". The wanted binding
+# comes in the environment (WANT_MODS comma separated, WANT_KEY, WANT_ACT the
+# action text without whitespace outside strings, for example
+# Spawn("cosmic-screenshot")). With mode=scan it prints whether that key
+# combination is bound: `free`, `own` (to WANT_ACT) or `other`. With mode=open
+# it prints the file up to its final brace, with a comma inserted after the last
+# entry when it lacks one.
+# shellcheck disable=SC2016  # awk program, not shell
+_COSMIC_RON_AWK='
+function bad() { exit 2 }
+function sortmods(csv,   parts, n, j, x, t, out, l) {
+  n = split(csv, parts, ",")
+  for (j = 1; j <= n; j++) if (parts[j] != "") l[++cnt2] = parts[j]
+  for (j = 1; j <= cnt2; j++) for (x = j + 1; x <= cnt2; x++) if (l[x] < l[j]) { t = l[j]; l[j] = l[x]; l[x] = t }
+  out = ""
+  for (j = 1; j <= cnt2; j++) out = out (j > 1 ? "," : "") l[j]
+  cnt2 = 0
+  return out
+}
+function finish_action() {
+  if (inact && pm) status = (act == want_act) ? "own" : "other"
+  inact = 0; pm = 0; act = ""
+}
+function tuple(   piece, m, k, parts, np, j, sorted) {
+  if (!match(tup, /(^|,)key:"#[0-9]+"/)) bad()
+  piece = substr(tup, RSTART, RLENGTH); sub(/^,/, "", piece)
+  k = strs[substr(piece, 7, length(piece) - 7)]
+  m = ""
+  if (match(tup, /(^|,)modifiers:\[[^]]*\]/)) {
+    piece = substr(tup, RSTART, RLENGTH); sub(/^,/, "", piece)
+    np = split(substr(piece, 12, length(piece) - 12), parts, ",")
+    for (j = 1; j <= np; j++) if (parts[j] != "") list[++cnt] = parts[j]
+    # sort the modifier names so that their order does not matter
+    for (j = 1; j <= cnt; j++) for (x = j + 1; x <= cnt; x++) if (list[x] < list[j]) { t = list[j]; list[j] = list[x]; list[x] = t }
+    for (j = 1; j <= cnt; j++) m = m (j > 1 ? "," : "") list[j]
+    cnt = 0
+  }
+  pm = (m == want_mods && tolower(k) == want_key)
+}
+{ buf = buf $0 "\n" }
+END {
+  n = length(buf); status = "free"
+  want_mods = sortmods(ENVIRON["WANT_MODS"]); want_key = tolower(ENVIRON["WANT_KEY"]); want_act = ":" ENVIRON["WANT_ACT"]
+  for (i = 1; i <= n; i++) {
+    c = substr(buf, i, 1)
+    if (c ~ /[ \t\r\n]/) continue
+    if (c == "/" && substr(buf, i + 1, 1) == "/") { while (i <= n && substr(buf, i, 1) != "\n") i++; continue }
+    if (c == "/" && substr(buf, i + 1, 1) == "*") bad()
+    if (done) bad()
+    pcode = lastcode; pch = lastch
+    if (c == "\"") {
+      j = i + 1; s = ""
+      while (j <= n) {
+        d = substr(buf, j, 1)
+        if (d == "\\") { s = s d substr(buf, j + 1, 1); j += 2; continue }
+        if (d == "\"") break
+        s = s d; j++
+      }
+      if (j > n || depth < 1) bad()
+      i = j; strs[++ns] = s
+      if (intup) tup = tup "\"#" ns "\""
+      else if (inact) act = act "\"" s "\""
+      else bad()
+      lastcode = i; lastch = "\""
+      continue
+    }
+    lastcode = i; lastch = c
+    if (c == "{" || c == "(" || c == "[") {
+      if (depth == 0) { if (c != "{" || seen) bad(); seen = 1; depth = 1; stack[1] = c; continue }
+      if (depth == 1 && !inact) { if (c != "(") bad(); depth = 2; stack[2] = c; intup = 1; tup = ""; continue }
+      if (depth == 1 && inact && c == "(" && substr(act, length(act), 1) == ")") bad()
+      depth++; stack[depth] = c
+      if (intup) tup = tup c; else act = act c
+      continue
+    }
+    if (c == "}" || c == ")" || c == "]") {
+      if (depth == 0) bad()
+      o = stack[depth]
+      if (!((o == "{" && c == "}") || (o == "(" && c == ")") || (o == "[" && c == "]"))) bad()
+      depth--
+      if (depth == 0) { finish_action(); closepos = i; fcode = pcode; fch = pch; done = 1; continue }
+      if (depth == 1 && intup) { intup = 0; tuple(); inact = 1; act = ""; continue }
+      if (intup) tup = tup c; else act = act c
+      continue
+    }
+    if (depth == 0) bad()
+    if (c == "," && depth == 1) { if (!inact) bad(); finish_action(); continue }
+    if (intup) tup = tup c
+    else if (inact) act = act c
+    else bad()
+  }
+  if (!done || depth != 0) bad()
+  if (mode == "scan") { print status; exit 0 }
+  if (fch != "{" && fch != "," && fch !~ /[A-Za-z0-9_)"\]]/) bad()
+  printf "%s", substr(buf, 1, fcode)
+  if (fch != "{" && fch != ",") printf ","
+  printf "%s", substr(buf, fcode + 1, closepos - fcode - 1)
+}'
+
+# cosmic_shortcut_ensure <modifiers-csv> <key> <description> <action>: the
+# `custom` key of CosmicSettings.Shortcuts is one RON map shared by every module
+# and by the user. A module owns only its own entry: this creates the file when
+# it is missing or an empty map, adds the entry inside an existing map (after a
+# .bak backup), and leaves the file alone when the key combination is already
+# bound (to this action: nothing to do; to anything else: a warning, because a
+# duplicate key would make the map invalid). Entries of other modules and of the
+# user are never removed or changed. A map whose shape is not understood is left
+# untouched with a warning. Example:
+#   cosmic_shortcut_ensure "Alt" s aurahud 'Spawn("/home/u/.local/bin/aura switcher")'
+cosmic_shortcut_ensure() {
+  local mods="$1" key="$2" desc="$3" action="$4"
+  local dest="$HOME/.config/cosmic/com.system76.CosmicSettings.Shortcuts/v1/custom"
+  local combo="${mods//,/+}+${key^^}"
+  local content trimmed entry tmp state rc=0 m
+  local -a mlist
+
+  entry="    ("$'\n'"        modifiers: ["$'\n'
+  IFS=, read -ra mlist <<<"$mods"
+  for m in "${mlist[@]}"; do entry+="            $m,"$'\n'; done
+  entry+="        ],"$'\n'"        key: \"$key\","$'\n'"        description: Some(\"$desc\"),"$'\n'"    ): $action,"
+
+  user_path_writable "$dest" || return 0
+  content=""
+  [[ -f "$dest" ]] && content="$(cat -- "$dest")"
+  trimmed="${content//[[:space:]]/}"
+  tmp="$(mktemp)"
+  if [[ -z "$trimmed" || "$trimmed" == "{}" ]]; then
+    printf '{\n%s\n}' "$entry" >"$tmp"
+    install_file "$tmp" "$dest" 0644 || rc=$?
+    rm -f -- "$tmp"
+    return "$rc"
+  fi
+  if ! state="$(printf '%s\n' "$content" | WANT_MODS="$mods" WANT_KEY="$key" WANT_ACT="$action" awk -v mode=scan "$_COSMIC_RON_AWK")"; then
+    rm -f -- "$tmp"
+    log_warn "$dest is not a shortcut map this setup understands: not adding the $combo shortcut ($desc)"
+    return 0
+  fi
+  case "$state" in
+    own)
+      rm -f -- "$tmp"
+      return 0
+      ;;
+    other)
+      rm -f -- "$tmp"
+      log_warn "$combo is already bound to something else in $dest: leaving it alone (wanted: $action)"
+      return 0
+      ;;
+  esac
+  if ! printf '%s\n' "$content" | WANT_MODS="$mods" WANT_KEY="$key" WANT_ACT="$action" awk -v mode=open "$_COSMIC_RON_AWK" >"$tmp"; then
+    rm -f -- "$tmp"
+    log_warn "$dest is not a shortcut map this setup understands: not adding the $combo shortcut ($desc)"
+    return 0
+  fi
+  printf '%s\n}\n' "$entry" >>"$tmp"
+  install_file "$tmp" "$dest" 0644 || rc=$?
+  rm -f -- "$tmp"
+  return "$rc"
+}

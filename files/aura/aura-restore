@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+# aura-restore: start the last Aura animated wallpaper (mpvpaper) at login.
+#
+# Reads "current" from the Aura config and falls back to the first wallpaper
+# in the Aura wallpaper directory. Never fails the session when there is
+# nothing to show. Run by the aura-restore.service user unit.
+set -u
+
+# Deterministic glob ordering for the fallback choice.
+export LC_ALL=C
+
+config="${XDG_CONFIG_HOME:-$HOME/.config}/aura/config.json"
+wall_dir="$HOME/Pictures/Wallpapers/Aura"
+runtime="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+uid="$(id -u)"
+
+log() { printf 'aura-restore: %s\n' "$*" >&2; }
+
+# cfg <jq-filter> <default>: read a value from the Aura config, tolerating a
+# missing config, a missing jq or invalid JSON.
+cfg() {
+  local val=""
+  if [[ -f "$config" ]] && command -v jq >/dev/null 2>&1; then
+    val="$(jq -r "$1" "$config" 2>/dev/null)" || val=""
+  fi
+  printf '%s\n' "${val:-$2}"
+}
+
+is_running() { pgrep -u "$uid" -x mpvpaper >/dev/null 2>&1; }
+
+# first_wallpaper: first regular media file in wall_dir, sorted by name.
+first_wallpaper() {
+  local f ext
+  shopt -s nullglob
+  for f in "$wall_dir"/*; do
+    [[ -f "$f" ]] || continue
+    ext="${f##*.}"
+    ext="${ext,,}"
+    case "$ext" in
+      mp4 | mkv | webm | mov | gif | png | jpg | jpeg | webp)
+        printf '%s\n' "$f"
+        return 0
+        ;;
+      *) ;;
+    esac
+  done
+  return 1
+}
+
+# wayland_ready: the compositor socket exists (named, or the first wayland-N).
+wayland_ready() {
+  local s
+  if [[ -n "${WAYLAND_DISPLAY:-}" ]]; then
+    [[ -e "$runtime/$WAYLAND_DISPLAY" ]]
+    return
+  fi
+  for s in "$runtime"/wayland-*; do
+    [[ -e "$s" && "$s" != *.lock ]] && return 0
+  done
+  return 1
+}
+
+# Aura or an earlier start already owns the wallpaper: never run two.
+if is_running; then
+  exit 0
+fi
+
+wall="$(cfg '.current // empty' '')"
+if [[ -z "$wall" || ! -f "$wall" ]]; then
+  if ! wall="$(first_wallpaper)"; then
+    log "no wallpaper to restore (current is unset or missing and $wall_dir has no media files)"
+    exit 0
+  fi
+  log "current wallpaper missing, falling back to $wall"
+fi
+
+mpvpaper="$HOME/.local/bin/mpvpaper"
+if [[ ! -x "$mpvpaper" ]]; then
+  mpvpaper="$(command -v mpvpaper || true)"
+fi
+if [[ -z "$mpvpaper" ]]; then
+  log "mpvpaper not found"
+  exit 0
+fi
+
+# Wait up to 15 s for the compositor.
+for _ in $(seq 1 30); do
+  wayland_ready && break
+  sleep 0.5
+done
+if ! wayland_ready; then
+  log "no Wayland socket in $runtime after 15 s"
+  exit 1
+fi
+
+# Someone may have started a wallpaper while we waited.
+if is_running; then
+  exit 0
+fi
+
+output="$(cfg '.output // "*"' '*')"
+mkdir -p -- "$runtime/aura"
+rm -f -- "$runtime/aura/mpv_all.sock"
+
+exec "$mpvpaper" -l background -p -o "loop-file=inf --image-display-duration=inf --hwdec=auto-safe --no-config --demuxer-max-bytes=24M --demuxer-readahead-secs=2 --vd-lavc-threads=2 --background-color=#000000 --no-audio --input-ipc-server=$runtime/aura/mpv_all.sock" "$output" "$wall"

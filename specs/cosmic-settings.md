@@ -68,9 +68,11 @@ except for the shortcuts file (see below). Each key was checked against COSMIC
    appending, and any shape the reader does not understand (block comment,
    unbalanced brackets, an entry without `key`, a missing comma between
    entries) leaves the file untouched with a warning. The module never removes or edits entries it does not
-   own. The aura module must follow the same rule (add its Alt+S entry inside
-   the map, never replace the file), so either order of the two modules works
-   and neither clobbers the other.
+   own. The reader and merger are one function, `cosmic_shortcut_ensure` in
+   `lib/common.sh`, shared with the aura module (specs/aura.md decision 3), which
+   adds its Alt+S entry the same way: either order of the two modules works and
+   neither clobbers the other. A key combination already bound to something else
+   is left alone with a warning.
 3. **No keyboard.** The `xkb_config` generation (and the login-screen copy) is
    not part of this module; the keyboard module owns it. This module never
    writes `xkb_config`.
