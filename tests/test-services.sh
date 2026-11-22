@@ -84,8 +84,8 @@ check "nothing is disabled, stopped, restarted or masked (the running network is
 check "ifupdown's networking.service and systemd-networkd are not touched" $?
 [[ "$(find "$KCS_ROOT" -type f | sort | xargs md5sum)" == "$before_files" ]]
 check "the module writes or changes no file (interfaces and NetworkManager.conf stay as they are)" $?
-! grep -q '\[warn\]' "$WORK/out"
-check "fresh run on a plain system: no warning" $?
+! grep '\[warn\]' "$WORK/out" | grep -vq 'next reboot'
+check "fresh run on a plain system: no warning but the reboot notice" $?
 
 # --- second run changes nothing ----------------------------------------------
 svc
@@ -125,13 +125,22 @@ check "an interface in interfaces.d is detected too" $?
 reset_state
 printf '%s\n' '# iface eth0 inet dhcp' 'auto lo' 'iface lo inet loopback' >"$KCS_ROOT/etc/network/interfaces"
 svc
-grep -qx 'enable -- NetworkManager.service' "$SYSLOG" && ! grep -q '\[warn\]' "$WORK/out"
-check "a commented iface and the loopback do not count as ifupdown-managed (no warning)" $?
+grep -qx 'enable -- NetworkManager.service' "$SYSLOG" && ! grep '\[warn\]' "$WORK/out" | grep -vq 'next reboot'
+check "a commented iface and the loopback do not count as ifupdown-managed (no warning but the reboot notice)" $?
 reset_state
 rm -rf -- "$KCS_ROOT/etc/network"
 svc
 grep -qx 'enable -- NetworkManager.service' "$SYSLOG"
 check "no /etc/network/interfaces at all: plain enable, not started" $?
+reset_state
+svc
+grep -q '\[warn\].*NetworkManager.*next reboot' "$WORK/out"
+check "NetworkManager enabled but not active: a warning says it starts after the next reboot" $?
+reset_state
+echo NetworkManager.service >"$FAKE_STATE/active"
+svc
+! grep -q 'next reboot' "$WORK/out"
+check "NetworkManager already active: no reboot warning" $?
 reset_state
 echo NetworkManager.service >"$FAKE_STATE/active"
 svc

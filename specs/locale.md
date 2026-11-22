@@ -26,7 +26,9 @@ the module (`_LOCALE_GEN`).
   `/etc/default/locale.bak.<timestamp>` when a value changes.
 - A `LC_ALL` line in `/etc/default/locale` overrides everything this module
   sets; the module warns about it and does not remove it.
-- Optional `LOCALE_TZ=<Area/City>` (must be a file under
+- Optional `LOCALE_TZ=<Area/City>` (must match
+  `^[A-Za-z_]+(/[A-Za-z0-9_+-]+)*$`, which rules out `..`, absolute paths and odd
+  characters before any path is touched, and must be a file under
   `/usr/share/zoneinfo`, a directory is rejected): sets the time zone with `timedatectl`;
   without it the time zone is left alone.
 - No services. No keyboard files. No `/etc/locale.conf` (that is the Arch

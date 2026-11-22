@@ -330,6 +330,18 @@ apt_update_once() {
   _APT_UPDATED=1
 }
 
+# apt_update_may_fail: like apt_update_once but returns the status instead of
+# ending the module, for a caller that can carry on with stale lists. A failed
+# refresh is not remembered, so a later apt_update_once tries again.
+apt_update_may_fail() {
+  if [[ "$_APT_UPDATED" == "1" ]]; then
+    return 0
+  fi
+  log_info "refreshing the package lists"
+  _apt_get_may_fail update || return $?
+  _APT_UPDATED=1
+}
+
 # apt_full_upgrade: bring the system up to date (never a partial upgrade).
 apt_full_upgrade() {
   log_change "full system upgrade"

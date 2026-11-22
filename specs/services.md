@@ -50,7 +50,9 @@ Bluetooth adapter exists.
      `--now`, whether or not it is already active: it starts at the next boot.
      Starting it on a running machine could re-plumb a connection, and the
      machine may be reached over SSH ("never cut the network of the running
-     system"). The cost is that NetworkManager is not running until a reboot.
+     system"). The cost is that NetworkManager is not running until a reboot; when it was
+     just enabled and is not active, the module logs a warning saying it starts
+     after the next reboot, so the notice shows in the run output.
   3. When ifupdown configures an interface (any `iface <name>` other than
      `lo` in `/etc/network/interfaces` or `interfaces.d/*`), a warning names the
      interface: NetworkManager leaves it to ifupdown, so the network stays

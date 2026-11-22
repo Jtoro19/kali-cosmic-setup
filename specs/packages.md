@@ -131,10 +131,13 @@ Dropped, with the reason:
 - **Download**: `download_verified` (`lib/common.sh`) refuses an empty or
   malformed checksum, downloads into a private temporary directory, compares
   with `sha256sum`, and moves the file into place only on a match. The module
-  keeps the `.deb` in a 0755 directory (apt reads it as `_apt`), re-checks its
-  SHA-256 right before `apt-get install` (the directory is user-owned, so the
-  file could change after the first check), and removes it on every outcome,
-  including a failed `apt-get install`. Dry-run creates no temporary directory
+  downloads into a 0700 directory of the invoking user, then copies the
+  verified file with `sudo install -m0644` into a root-owned 0755 directory
+  (`sudo mktemp -d`; apt reads it as `_apt`), re-checks the SHA-256 of that
+  copy and installs from it. Root never installs a file that a user process
+  could still change. Both directories are removed on every outcome, including
+  a failed `apt-get install`. The runtime dependency check loops over every
+  package in `_PACKAGES_PEAZIP_RUNTIME`. Dry-run creates no temporary directory
   and downloads nothing.
 - All downloads (`download_verified`, `apt_install_key`) use `curl --proto
   '=https' --proto-redir '=https' --tlsv1.2 --connect-timeout 15 --max-time 600

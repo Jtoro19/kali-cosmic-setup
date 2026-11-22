@@ -71,6 +71,9 @@ _services_networkmanager() {
   fi
   log_change "enable $unit (for the next boot, not started now)"
   run_sudo systemctl enable -- "$unit"
+  if ! systemctl is-active --quiet "$unit" >/dev/null 2>&1; then
+    log_warn "$unit is enabled but not running: it starts after the next reboot"
+  fi
 }
 
 module_apply() {

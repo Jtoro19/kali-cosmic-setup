@@ -173,6 +173,18 @@ FAKE_NO_CANDIDATE="amd64-microcode" DRIVERS_CPU_VENDOR=amd DRIVERS_GPU_VENDORS="
 [[ "$rc" == 0 ]] && grep -q '\[warn\].*amd64-microcode' "$WORK/out"
 check "stale lists with the base installed: warning only after the recheck" $?
 
+# --- a failing apt update must not fail the run (the spec: never fails on a missing candidate)
+reset_state
+FAKE_APT_FAIL_UPDATE_NTH=1 FAKE_NO_CANDIDATE="amd64-microcode" DRIVERS_CPU_VENDOR=amd DRIVERS_GPU_VENDORS="" drv
+[[ "$rc" == 0 ]] && grep -q '\[warn\].*amd64-microcode' "$WORK/out" && installed_has "${BASE[@]}" && installed_lacks amd64-microcode
+check "a failing apt update during the candidate recheck: warning, the run still succeeds" $?
+
+# --- dry-run cannot refresh the lists: no misleading non-free-firmware advice
+reset_state
+FAKE_NO_CANDIDATE="amd64-microcode" DRIVERS_CPU_VENDOR=amd DRIVERS_GPU_VENDORS="" drv --dry-run
+[[ "$rc" == 0 ]] && ! grep -q 'non-free-firmware' "$WORK/out" && grep -q 'cannot be checked.*amd64-microcode\|amd64-microcode.*cannot be checked' "$WORK/out"
+check "dry-run: no non-free-firmware warning, says the candidate cannot be checked without a refresh" $?
+
 # --- already installed: nothing to do -----------------------------------------
 reset_state
 printf '%s\n' amd64-microcode firmware-amd-graphics "${BASE[@]}" >"$FAKE_STATE/installed"

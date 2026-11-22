@@ -96,7 +96,7 @@ _packages_sha256_ok() {
 # only when KCS_TEST is set (the tests serve a fixture, not the real .deb); a
 # real run always uses the pinned value.
 _packages_peazip() {
-  local want="$_PACKAGES_PEAZIP_SHA256" cur dir deb rc=0
+  local want="$_PACKAGES_PEAZIP_SHA256" cur dir deb rdir="" rdeb rt rc=0
   if [[ -n "${KCS_TEST:-}" && -n "${PACKAGES_PEAZIP_SHA256:-}" ]]; then
     want="$PACKAGES_PEAZIP_SHA256"
   fi
@@ -106,33 +106,47 @@ _packages_peazip() {
     return 0
   fi
   ensure_packages curl ca-certificates || return 1
-  if ! pkg_installed "${_PACKAGES_PEAZIP_RUNTIME[0]}"; then
-    # The lists may be stale or wiped: the runtime package needs a candidate.
-    apt_update_once || return 1
-  fi
+  for rt in "${_PACKAGES_PEAZIP_RUNTIME[@]}"; do
+    if ! pkg_installed "$rt"; then
+      # The lists may be stale or wiped: a runtime package needs a candidate.
+      apt_update_once || return 1
+      break
+    fi
+  done
   ensure_packages "${_PACKAGES_PEAZIP_RUNTIME[@]}" || return 1
   log_change "install peazip $_PACKAGES_PEAZIP_VERSION from the upstream .deb"
   if [[ "$DRY_RUN" == "1" ]]; then
     log_info "[dry-run] would download $_PACKAGES_PEAZIP_URL and verify SHA-256 $want"
     return 0
   fi
+  # The download lands in a private (0700) directory of the invoking user. Root
+  # never installs from there: the verified file is copied into a root-owned
+  # directory, verified again there, and apt installs that copy. The root-owned
+  # directory is 0755 and the copy 0644 so apt's unprivileged _apt user can
+  # read it.
   dir="$(mktemp -d)"
+  chmod 0700 "$dir"
   deb="$dir/$_PACKAGES_PEAZIP_DEB"
-  # apt reads the file as its unprivileged _apt user: the directory must be
-  # traversable and the file readable.
-  chmod 0755 "$dir"
   download_verified "$_PACKAGES_PEAZIP_URL" "$deb" "$want" || rc=$?
   if ((rc == 0)); then
-    chmod 0644 "$deb" 2>/dev/null || true
-    # Verify again right before apt reads the file (it sits in a user-owned
-    # directory between the download and the install).
-    if _packages_sha256_ok "$deb" "$want"; then
-      _apt_get_may_fail install "$deb" || rc=$?
+    rdir="$(run_sudo_may_fail mktemp -d)" || rc=$?
+  fi
+  if ((rc == 0)); then
+    run_sudo_may_fail chmod 0755 "$rdir" || rc=$?
+    rdeb="$rdir/$_PACKAGES_PEAZIP_DEB"
+  fi
+  if ((rc == 0)); then
+    run_sudo_may_fail install -m0644 "$deb" "$rdeb" || rc=$?
+  fi
+  if ((rc == 0)); then
+    if _packages_sha256_ok "$rdeb" "$want"; then
+      _apt_get_may_fail install "$rdeb" || rc=$?
     else
-      log_error "checksum mismatch: the downloaded .deb changed before it was installed; nothing was installed"
+      log_error "checksum mismatch: the copy of the .deb changed before it was installed; nothing was installed"
       rc=1
     fi
   fi
+  [[ -z "$rdir" ]] || run_sudo_may_fail rm -rf -- "$rdir" || true
   rm -rf -- "$dir"
   if ((rc != 0)); then
     log_error "peazip $_PACKAGES_PEAZIP_VERSION was not installed (exit $rc)"

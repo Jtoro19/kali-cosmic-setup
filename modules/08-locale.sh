@@ -99,6 +99,11 @@ module_apply() {
   # The keyboard layout is not touched (the keyboard module owns it). The time
   # zone only changes on request.
   if [[ -n "${LOCALE_TZ:-}" ]]; then
+    # Names only: no dots, so no "..", no absolute path, no odd characters.
+    if [[ ! "$LOCALE_TZ" =~ ^[A-Za-z_]+(/[A-Za-z0-9_+-]+)*$ ]]; then
+      log_error "invalid time zone: $LOCALE_TZ (expected a name like America/Bogota)"
+      return 1
+    fi
     if [[ ! -f "/usr/share/zoneinfo/$LOCALE_TZ" ]]; then
       log_error "unknown time zone: $LOCALE_TZ"
       return 1

@@ -113,8 +113,7 @@ check "run: no temporary files are left behind" $?
   ! grep -qv -e "--max-time 600" "$FAKE_STATE/curl-args.log" &&
   ! grep -qv -e "--retry 2" "$FAKE_STATE/curl-args.log"
 check "downloads: curl is https-only with TLS 1.2, timeouts and --retry 2" $?
-! rg -q 'wget' "$REPO_ROOT/lib/common.sh" "$REPO_ROOT/modules/15-packages.sh" 2>/dev/null &&
-  ! grep -q 'wget -' "$REPO_ROOT/lib/common.sh"
+! grep -q 'wget' "$REPO_ROOT/lib/common.sh" "$REPO_ROOT/modules/15-packages.sh"
 check "downloads: no wget fallback remains" $?
 
 # Brave repository files.
@@ -254,6 +253,37 @@ printf 'peazip 11.4.0-1\n' >"$FAKE_STATE/versions"
 pk
 ! grep -qx "$DEB_URL" "$FAKE_STATE/curl.log"
 check "peazip: 11.4.0-1 counts as the pinned version or newer (dpkg ordering)" $?
+
+# Tilde and revision ordering. The fake dpkg uses sort -V, which matches Debian
+# ordering for these shapes (11.4.0~rc1 < 11.4.0 < 11.4.0-1); the real dpkg runs
+# on Kali. A pre-release of the pinned version must be upgraded.
+reset_state
+printf 'peazip\n' >>"$FAKE_STATE/installed"
+printf 'peazip 11.4.0~rc1\n' >"$FAKE_STATE/versions"
+pk
+grep -qx "$DEB_URL" "$FAKE_STATE/curl.log" && grep -q '^peazip 11.4.0$' "$FAKE_STATE/versions"
+check "peazip: 11.4.0~rc1 sorts before the pinned 11.4.0 and is upgraded" $?
+for pair in "11.4.0~rc1 lt 11.4.0" "11.4.0 lt 11.4.0-1" "11.4.0~rc1 lt 11.4.0-1" "11.10.0 gt 11.4.0"; do
+  # shellcheck disable=SC2086  # the three words are the operands
+  PATH="$WORK/bin:$PATH" dpkg --compare-versions $pair
+  check "fake dpkg: $pair" $?
+done
+
+# The verified .deb is copied to a root-owned location and apt installs that
+# copy, never the file in the user-writable download directory.
+reset_state
+pk
+dest="$(sed -n 's/.*install -m0644 [^ ]* //p' "$FAKE_STATE/sudo.log" | head -n 1)"
+[[ -n "$dest" ]] && grep -qx "deb-file-present $dest" "$FAKE_STATE/all.log"
+check "peazip: apt installs a root-installed copy (sudo install -m0644), not the user download" $?
+grep -q 'mktemp -d' "$FAKE_STATE/sudo.log" && grep -q 'rm -rf' "$FAKE_STATE/sudo.log" && [[ -z "$(ls -A "$TMPDIR")" ]]
+check "peazip: the root-owned directory is created by root and both temp dirs are cleaned up" $?
+reset_state
+export PACKAGES_PEAZIP_SHA256=1111111111111111111111111111111111111111111111111111111111111111
+pk
+! grep -q 'install -m0644' "$FAKE_STATE/sudo.log"
+check "peazip: a mismatch stops before anything is copied to the root-owned location" $?
+reset_state
 
 # --- a failed update then a re-run: Brave still gets its lists ----------------
 reset_state

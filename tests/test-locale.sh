@@ -197,9 +197,17 @@ check "no LC_ALL in /etc/default/locale: no LC_ALL warning" $?
 
 # --- LOCALE_TZ must be a zone file, not a directory ---------------------------
 reset_state
-LOCALE_TZ=America loc
+LOCALE_TZ=America/Argentina loc
 [[ "$rc" != 0 ]] && grep -q 'unknown time zone' "$WORK/out"
 check "LOCALE_TZ naming a zoneinfo directory is an unknown time zone" $?
+
+# --- LOCALE_TZ is validated before any path check ------------------------------
+for bad in '../etc/passwd' '/etc/passwd' 'America/../../etc/passwd' 'Zone Name' 'a;b'; do
+  reset_state
+  LOCALE_TZ="$bad" loc
+  [[ "$rc" != 0 ]] && grep -q 'invalid time zone' "$WORK/out"
+  check "LOCALE_TZ '$bad' is rejected as an invalid time zone" $?
+done
 
 # --- failures fail the module ------------------------------------------------
 reset_state

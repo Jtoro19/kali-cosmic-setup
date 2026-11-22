@@ -74,6 +74,11 @@ detection, so an empty value simulates a VM).
 - `apt-get update` runs once, only when something has to be installed or when
   a wanted firmware package shows no candidate (stale lists on a fresh image):
   the check is repeated once after the refresh, and only then warned about.
+  The refresh here is soft (`apt_update_may_fail`): if it fails (no network yet)
+  the module warns that availability cannot be confirmed and carries on, because
+  a missing firmware candidate never fails the run. In dry-run the lists are
+  not refreshed, so a missing candidate is reported as "cannot be checked"
+  instead of the non-free-firmware advice.
 - Candidate checks use `apt_has_candidate` from `lib/common.sh`, which forces
   `LC_ALL=C` (apt prints `Candidate:` translated otherwise). The same applies to
   the other apt and dpkg output parsers.

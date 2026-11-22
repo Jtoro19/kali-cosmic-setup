@@ -39,6 +39,7 @@ _drivers_gpu_vendors() {
 module_apply() {
   local cpu vendors v pkg nvidia=0 known=0
   local -a want=("${_DRIVERS_BASE[@]}") firmware=() install=()
+  local refresh_failed=0
 
   cpu="$(_drivers_cpu_vendor)"
   case "$cpu" in
@@ -76,10 +77,17 @@ module_apply() {
       want+=("$pkg")
       continue
     fi
-    # Stale lists (a fresh image) hide the candidate: refresh once and look again.
-    apt_update_once || return 1
+    # Stale lists (a fresh image) hide the candidate: refresh once and look
+    # again. A failed refresh (no network yet) must not fail the module: this
+    # package is optional, so warn and carry on.
+    if ((!refresh_failed)) && ! apt_update_may_fail; then
+      refresh_failed=1
+      log_warn "could not refresh the package lists; the availability of $pkg cannot be confirmed"
+    fi
     if apt_has_candidate "$pkg"; then
       want+=("$pkg")
+    elif [[ "$DRY_RUN" == "1" ]]; then
+      log_info "[dry-run] the lists are not refreshed in a dry run: whether $pkg is available cannot be checked"
     else
       log_warn "$pkg is not available from apt; enable the non-free-firmware component in your Kali sources and run the installer again"
     fi
