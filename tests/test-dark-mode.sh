@@ -187,6 +187,30 @@ dm
   grep -qx 'gtk-application-prefer-dark-theme=1' "$S3" && grep -q '\[warn\].*adw-gtk3-dark' "$WORK/out"
 check "theme directory missing after the install: warn, set only the dark preference" $?
 
+# --- files owned by someone else, symlinks (never through sudo) -------------------
+reset_state
+mkdir -p "$CFG/gtk-3.0" "$CFG/qt6ct"
+printf '[Settings]\ngtk-theme-name=Adwaita\n' >"$S3"
+printf '[Appearance]\nstyle=Windows\n' >"$CFG/qt6ct/qt6ct.conf"
+FAKE_NOT_OWNED="$S3:$CFG/qt6ct" dm
+[[ "$rc" == 0 && "$(cat "$S3")" == $'[Settings]\ngtk-theme-name=Adwaita' && "$(cat "$CFG/qt6ct/qt6ct.conf")" == $'[Appearance]\nstyle=Windows' ]] &&
+  grep -q '\[warn\].*not owned' "$WORK/out" && ! grep -q "$HOME_DIR" "$FAKE_STATE/sudo.log" && ! ls "$S3".bak.* >/dev/null 2>&1
+check "ownership: a settings.ini and a qt6ct directory owned by someone else are skipped with a warning, no sudo write" $?
+[[ -f "$CFG/gtk-4.0/settings.ini" && -f "$CFG/qt5ct/qt5ct.conf" ]]
+check "ownership: the files of the other tools are still written" $?
+reset_state
+mkdir -p "$CFG/gtk-3.0" "$HOME_DIR/dotfiles" "$WORK/outside"
+printf '[Settings]\ngtk-theme-name=Adwaita\n' >"$HOME_DIR/dotfiles/settings.ini"
+ln -s "$HOME_DIR/dotfiles/settings.ini" "$S3"
+printf '[Appearance]\nstyle=Windows\n' >"$WORK/outside/qt5ct.conf"
+mkdir -p "$CFG/qt5ct"
+ln -s "$WORK/outside/qt5ct.conf" "$CFG/qt5ct/qt5ct.conf"
+dm
+[[ "$rc" == 0 && -L "$S3" ]] && grep -qx 'gtk-theme-name=adw-gtk3-dark' "$HOME_DIR/dotfiles/settings.ini"
+check "symlink: a settings.ini linked into the home directory is edited through the link, the link stays" $?
+[[ -L "$CFG/qt5ct/qt5ct.conf" && "$(cat "$WORK/outside/qt5ct.conf")" == $'[Appearance]\nstyle=Windows' ]] && grep -q '\[warn\].*symlink' "$WORK/out"
+check "symlink: a qt5ct.conf linked outside the home directory is skipped with a warning, the link is not replaced" $?
+
 # --- failures -----------------------------------------------------------------
 reset_state
 FAKE_APT_RC=100 dm

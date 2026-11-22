@@ -122,7 +122,7 @@ module_apply() {
   _clip_unit || return 1
 
   # COSMIC autostart was unreliable for this; the systemd unit replaces it.
-  if [[ -e "$legacy" ]]; then
+  if [[ -e "$legacy" ]] && user_path_writable "$legacy"; then
     log_change "remove legacy autostart entry $legacy"
     backup_file "$legacy"
     run rm -f -- "$legacy"

@@ -45,15 +45,10 @@ _kitty_colors_units() {
     log_warn "no systemd user manager is reachable (no login session for $USER here): the colour-sync units are installed but not enabled; after you log in to COSMIC run: systemctl --user enable --now $name"
   fi
   if ((_KITTY_CHANGED)) || [[ ! -e "$out" ]]; then
+    user_path_writable "$out" || return 0
     # Generates cosmic-colors.conf from the accent; exits 0 when there is no theme.
     run "$bin"
   fi
-}
-
-# _kitty_actions_owned <file>: true unless the existing file belongs to someone
-# else (this module never writes another user's config through sudo).
-_kitty_actions_owned() {
-  [[ ! -e "$1" || "$(stat -c %u -- "$1")" == "$(id -u)" ]]
 }
 
 # _kitty_default_terminal: COSMIC runs the `Terminal` action of the system_actions
@@ -65,10 +60,7 @@ _kitty_default_terminal() {
   local dest="$HOME/.config/cosmic/com.system76.CosmicSettings.Shortcuts/v1/system_actions"
   local default tmp re='^([[:space:]]*Terminal:[[:space:]]*)"[^"]*"'
   default="$(rootpath "$_KITTY_ACTIONS_DEFAULT")"
-  if ! _kitty_actions_owned "$dest"; then
-    log_warn "$dest belongs to another user: not touching it"
-    return 0
-  fi
+  user_path_writable "$dest" || return 0
   if [[ ! -e "$dest" ]]; then
     if [[ ! -f "$default" ]] || ! grep -Eq "$re" "$default"; then
       log_warn "$default has no Terminal entry: not writing system_actions (set the default terminal in COSMIC Settings, Super+T runs the Terminal action)"

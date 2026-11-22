@@ -94,11 +94,13 @@ except for the shortcuts file (see below). Each key was checked against COSMIC
    `input_devices` (hardware specific).
 7. **User scope.** The installer refuses to run as root, so `$HOME` is the
    invoking user's home; nothing is written to root's home or outside
-   `~/.config/cosmic`. When `~/.config/cosmic` or a component or version
-   directory below it (or the key file itself) exists but is not owned by the
-   invoking user (for example left by an earlier `sudo` run), the module warns
-   once per directory and skips what is below it: it never writes through
-   sudo into the user's config.
+   `~/.config/cosmic`. The shared guard `user_path_writable` (lib/common.sh,
+   used by every helper that writes a file) skips a key whose file, or any
+   existing directory between it and `$HOME`, is not owned by the invoking user
+   (for example left by an earlier `sudo` run): one warning per path, never a
+   write through sudo into the user's config. A symlinked key file is written
+   through the link when its target is inside `$HOME`, otherwise skipped (the
+   link is never replaced by a regular file).
 
 ## Files and packages touched
 

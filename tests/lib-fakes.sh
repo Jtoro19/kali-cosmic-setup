@@ -480,7 +480,12 @@ case "$1" in
     if [ -f "$store/$2.$3" ]; then cat "$store/$2.$3"
     else case "$3" in gtk-theme) echo "'Adwaita'" ;; color-scheme) echo "'default'" ;; *) echo "''" ;; esac; fi
     ;;
-  set) printf '%s\n' "$4" >"$store/$2.$3" ;;
+  set)
+    [ -n "${FAKE_GSETTINGS_SETFAIL:-}" ] && exit 1
+    # FAKE_GSETTINGS_NOPERSIST=1: a backend that accepts the write and drops it.
+    [ -n "${FAKE_GSETTINGS_NOPERSIST:-}" ] && exit 0
+    printf '%s\n' "$4" >"$store/$2.$3"
+    ;;
   *) exit 2 ;;
 esac
 EOS
@@ -498,6 +503,25 @@ echo "dbus-run-session $*" >>"$FAKE_STATE/gsettings.log"
 DBUS_SESSION_BUS_ADDRESS=unix:path=/private-fake-bus
 export DBUS_SESSION_BUS_ADDRESS
 "$@"
+EOS
+
+  # stat: FAKE_NOT_OWNED (colon separated paths) "belong to root" for `stat -c %u`;
+  # everything else goes to the real stat.
+  cat >"$bin/stat" <<'EOS'
+#!/bin/sh
+if [ "$1" = "-c" ] && [ "$2" = "%u" ]; then
+  shift 2
+  [ "$1" = "--" ] && shift
+  for p in "$@"; do
+    mine=$(/usr/bin/stat -c %u -- "$p") || exit 1
+    old="$IFS"; IFS=:
+    for n in $FAKE_NOT_OWNED; do [ "$p" = "$n" ] && mine=$((mine + 1)); done
+    IFS="$old"
+    echo "$mine"
+  done
+  exit 0
+fi
+exec /usr/bin/stat "$@"
 EOS
 
   chmod +x "$bin"/*

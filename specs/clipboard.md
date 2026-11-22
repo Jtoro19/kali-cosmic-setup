@@ -74,6 +74,13 @@ sudo rm /usr/local/bin/wl-clip-persist
 sudo sed -i '/^COSMIC_DATA_CONTROL_ENABLED=1$/d' /etc/environment   # then log in again
 ```
 
+## User files
+
+The unit file and the legacy autostart entry go through the shared guard
+`user_path_writable`: owned by another user means skipped with a warning (no
+sudo, nothing removed); a symlinked unit is written through the link only when
+the target is inside `$HOME`.
+
 ## Verification
 
 ```bash

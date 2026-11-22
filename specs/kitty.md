@@ -54,7 +54,9 @@ generated and not shipped. kitty 0.48.2 from Kali (the config needs 0.46+).
    keeps all its entries: only a Terminal command that is still `cosmic-term` is
    switched; any other terminal the user chose (or no Terminal entry) is kept with
    a warning. If the shipped map cannot be read no partial map is written. A file
-   owned by another user is never written (no sudo for user config).
+   owned by another user is never written (no sudo for user config; the shared
+   guard `user_path_writable` covers every user file of this module, including
+   the rc file, and a symlinked file is followed only into `$HOME`).
    `cosmic-comp` reads this key (the string `system_actions` is in the binary).
 3. **Default terminal for apps.** `cosmic-settings` and `cosmic-files` mention
    `x-scheme-handler/terminal` (verified with `grep -ac`), so the

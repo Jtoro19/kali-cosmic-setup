@@ -241,6 +241,31 @@ FAKE_NO_USER_BUS=1 kt
 [[ "$rc" == 0 && -f "$CFG/systemd/user/kitty-cosmic-colors.path" && ! -s "$FAKE_STATE/user-enabled" ]] && grep -q 'systemctl --user enable --now kitty-cosmic-colors.path' "$WORK/out"
 check "no user manager: units are written, nothing is enabled, the command to run later is shown" $?
 
+# --- files owned by someone else, symlinks (never through sudo) ------------------------
+reset_state
+mkdir -p "$CFG/kitty" "$SA_DIR"
+printf 'font_size 9\n' >"$CFG/kitty/kitty.conf"
+printf '{ Terminal: "cosmic-term", }\n' >"$SA_DIR/system_actions"
+printf 'alias x=y\n' >"$HOME_DIR/.zshrc"
+FAKE_NOT_OWNED="$CFG/kitty/kitty.conf:$SA_DIR/system_actions:$HOME_DIR/.zshrc" kt
+[[ "$rc" == 0 && "$(cat "$CFG/kitty/kitty.conf")" == 'font_size 9' && "$(cat "$SA_DIR/system_actions")" == '{ Terminal: "cosmic-term", }' &&
+  "$(cat "$HOME_DIR/.zshrc")" == 'alias x=y' ]] && grep -q '\[warn\].*not owned' "$WORK/out" && ! grep -q "$HOME_DIR" "$FAKE_STATE/sudo.log"
+check "ownership: kitty.conf, system_actions and the rc file owned by someone else are skipped, no sudo write" $?
+[[ -f "$CFG/cosmic-mimeapps.list" && -f "$HOME_DIR/.local/bin/kitty-cosmic-colors.sh" ]]
+check "ownership: the files that are the user's are still written" $?
+reset_state
+mkdir -p "$HOME_DIR/dotfiles" "$WORK/outside"
+printf 'alias x=y\n' >"$HOME_DIR/dotfiles/zshrc"
+ln -s "$HOME_DIR/dotfiles/zshrc" "$HOME_DIR/.zshrc"
+mkdir -p "$CFG/kitty"
+printf 'font_size 9\n' >"$WORK/outside/kitty.conf"
+ln -s "$WORK/outside/kitty.conf" "$CFG/kitty/kitty.conf"
+kt
+[[ "$rc" == 0 && -L "$HOME_DIR/.zshrc" ]] && grep -q 'kali-cosmic-setup:kitty-clear' "$HOME_DIR/dotfiles/zshrc" && grep -qx 'alias x=y' "$HOME_DIR/dotfiles/zshrc"
+check "symlink: an rc file linked into the home directory gets the block through the link, the link stays" $?
+[[ -L "$CFG/kitty/kitty.conf" && "$(cat "$WORK/outside/kitty.conf")" == 'font_size 9' ]] && grep -q '\[warn\].*symlink' "$WORK/out"
+check "symlink: a kitty.conf linked outside the home directory is skipped with a warning, the link is not replaced" $?
+
 # --- static --------------------------------------------------------------------------------------------------------------------------
 grep '^| kitty ' "$REPO_ROOT/README.md" | grep -q 'kitty-cosmic-colors.path'
 check "README: the kitty row has a revert column" $?

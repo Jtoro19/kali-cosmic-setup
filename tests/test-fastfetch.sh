@@ -195,6 +195,25 @@ FASTFETCH_SKIP_IMAGES=1 ff
 [[ "$rc" == 0 && ! -s "$FAKE_STATE/git.log" && ! -d "$IMG" ]] && grep -qx '# >>> kali-cosmic-setup:fastfetch >>>' "$HOME_DIR/.zshrc"
 check "FASTFETCH_SKIP_IMAGES=1: no clone, the block is still written" $?
 
+# --- files owned by someone else, symlinks (never through sudo) -----------------------------
+reset_state
+mkdir -p "$HOME_DIR/.config/fastfetch"
+printf 'alias x=y\n' >"$HOME_DIR/.zshrc"
+FAKE_NOT_OWNED="$HOME_DIR/.config/fastfetch:$HOME_DIR/.zshrc" ff
+[[ "$rc" == 0 && ! -d "$IMG" && ! -s "$FAKE_STATE/git.log" && "$(cat "$HOME_DIR/.zshrc")" == 'alias x=y' ]] &&
+  grep -q '\[warn\].*not owned' "$WORK/out" && ! grep -q "$HOME_DIR" "$FAKE_STATE/sudo.log"
+check "ownership: a fastfetch directory and an rc file owned by someone else are skipped, no clone, no sudo write" $?
+reset_state
+mkdir -p "$HOME_DIR/dotfiles" "$HOME_DIR/.config/fastfetch" "$WORK/outside"
+printf 'alias x=y\n' >"$HOME_DIR/dotfiles/zshrc"
+ln -s "$HOME_DIR/dotfiles/zshrc" "$HOME_DIR/.zshrc"
+ln -s "$WORK/outside" "$HOME_DIR/.config/fastfetch/images"
+ff
+[[ "$rc" == 0 && -L "$HOME_DIR/.zshrc" ]] && grep -q 'kali-cosmic-setup:fastfetch' "$HOME_DIR/dotfiles/zshrc"
+check "symlink: an rc file linked into the home directory gets the block through the link, the link stays" $?
+[[ -z "$(ls -A "$WORK/outside")" && ! -s "$FAKE_STATE/git.log" ]] && grep -q '\[warn\].*symlink' "$WORK/out"
+check "symlink: an images directory linked outside the home directory is not filled (warning, no clone)" $?
+
 # --- nothing personal in the repository -----------------------------------------------------------------------
 [[ -z "$(find "$REPO_ROOT/files" -type f \( -iname '*.png' -o -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.webp' \) 2>/dev/null)" && ! -e "$REPO_ROOT/files/fastfetch" ]]
 check "the repository ships no image: the pool is fetched into the home directory at run time" $?

@@ -120,35 +120,6 @@ END {
   printf "%s", substr(buf, fcode + 1, closepos - fcode - 1)
 }'
 
-# Directories already reported as not owned (one warning each).
-_COSMIC_WARNED=""
-
-# _cosmic_owned <path>: true when the invoking user owns the path. Config that
-# someone else owns is never written through sudo (see _cosmic_writable).
-_cosmic_owned() {
-  [[ "$(stat -c %u -- "$1")" == "$(id -u)" ]]
-}
-
-# _cosmic_writable <dest>: true when no existing directory from ~/.config/cosmic
-# down to the key, and not the key itself, belongs to someone else. Otherwise it
-# warns, because install_file would use sudo for a location the user cannot
-# write: this module only ever writes the invoking user's own files.
-_cosmic_writable() {
-  local dest="$1" root="$HOME/.config/cosmic" p
-  p="$(dirname "$dest")"
-  [[ -e "$dest" ]] && p="$dest"
-  while [[ "$p" == "$root" || "$p" == "$root"/* ]]; do
-    if [[ -e "$p" ]] && ! _cosmic_owned "$p"; then
-      if [[ "$_COSMIC_WARNED" != *"|$p|"* ]]; then
-        _COSMIC_WARNED="$_COSMIC_WARNED|$p|"
-        log_warn "$p is not owned by $(id -un): not writing anything below it (fix it with: sudo chown -R $(id -un) $root)"
-      fi
-      return 1
-    fi
-    p="$(dirname "$p")"
-  done
-}
-
 # _cosmic_settings_shortcuts: the `custom` key is one RON map shared by every
 # module and by the user. This module owns only its own entry (Super+Shift+S,
 # cosmic-screenshot): it creates the file when missing or empty, adds its entry
@@ -161,7 +132,7 @@ _cosmic_settings_shortcuts() {
   local base="$REPO_ROOT/files/cosmic/$_COSMIC_SHORTCUTS" dest="$HOME/.config/cosmic/$_COSMIC_SHORTCUTS"
   local content trimmed body tmp state rc=0
 
-  _cosmic_writable "$dest" || return 0
+  user_path_writable "$dest" || return 0
   content=""
   [[ -f "$dest" ]] && content="$(cat -- "$dest")"
   trimmed="${content//[[:space:]]/}"
@@ -212,7 +183,7 @@ module_apply() {
   for rel in "${files[@]}"; do
     [[ "$rel" == "$_COSMIC_SHORTCUTS" ]] && continue
     dest="$dst/$rel"
-    _cosmic_writable "$dest" || continue
+    user_path_writable "$dest" || continue
     if [[ " ${_COSMIC_SEED_ONLY[*]} " == *" $rel "* && -e "$dest" ]]; then
       continue
     fi

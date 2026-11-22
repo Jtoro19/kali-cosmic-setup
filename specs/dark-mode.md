@@ -39,6 +39,17 @@ checked on the Kali VM are in `odd/verified-facts.md` section 3.
   keys and sections that qt5ct/qt6ct write when their GUI opens (fonts, window
   geometry) are kept, so opening the GUI does not make the module report changes.
 - Backups `<file>.bak.<timestamp>` for every file that changes.
+- The `[Appearance]` keys are re-applied on every run: a key the user changed
+  there (for example `style`) is put back to the shipped value, after a backup,
+  while keys outside `[Appearance]` are never touched. To keep a different
+  value, remove that line from `files/dark-mode/qt{5,6}ct.conf` in your copy.
+- User files (`settings.ini`, `qt5ct.conf`, `qt6ct.conf`) go through the shared
+  guard `user_path_writable`: a file or directory owned by another user is
+  skipped with a warning (never written through sudo), and a symlink is
+  followed only when its target is inside `$HOME`. `ensure_ini_line` accepts
+  CRLF files and `key = value` spacing. `ensure_gsetting` runs under
+  `timeout 20`, treats a failing `set` as a warning, and reads the value back to
+  report a backend that does not persist it.
 
 ## Decisions on ambiguities
 

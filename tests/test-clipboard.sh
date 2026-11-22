@@ -173,6 +173,29 @@ check "env: existing /etc/environment lines are kept" $?
 [[ ! -e "$HOME_DIR/.config/autostart/wl-clip-persist.desktop" ]] && compgen -G "$HOME_DIR/.config/autostart/wl-clip-persist.desktop.bak.*" >/dev/null
 check "legacy: the old autostart entry is removed with a backup" $?
 
+# --- files owned by someone else, symlinks (never through sudo) ------------------------
+reset_state
+mkdir -p "$(dirname "$UNIT")" "$HOME_DIR/.config/autostart"
+printf '[Unit]\nDescription=mine\n' >"$UNIT"
+printf '[Desktop Entry]\nExec=wl-clip-persist\n' >"$HOME_DIR/.config/autostart/wl-clip-persist.desktop"
+FAKE_NOT_OWNED="$UNIT:$HOME_DIR/.config/autostart/wl-clip-persist.desktop" clip
+[[ "$rc" == 0 && "$(cat "$UNIT")" == $'[Unit]\nDescription=mine' && -e "$HOME_DIR/.config/autostart/wl-clip-persist.desktop" ]] &&
+  grep -q '\[warn\].*not owned' "$WORK/out" && ! grep -q "$HOME_DIR" "$FAKE_STATE/sudo.log"
+check "ownership: a unit file and a legacy autostart entry owned by someone else are skipped, no sudo write, nothing removed" $?
+reset_state
+mkdir -p "$(dirname "$UNIT")" "$HOME_DIR/dotfiles" "$WORK/outside"
+printf 'x\n' >"$WORK/outside/wl-clip-persist.service"
+ln -s "$WORK/outside/wl-clip-persist.service" "$UNIT"
+clip
+[[ "$rc" == 0 && -L "$UNIT" && "$(cat "$WORK/outside/wl-clip-persist.service")" == x ]] && grep -q '\[warn\].*symlink' "$WORK/out"
+check "symlink: a unit file linked outside the home directory is skipped with a warning, the link is not replaced" $?
+reset_state
+mkdir -p "$(dirname "$UNIT")" "$HOME_DIR/dotfiles"
+ln -s "$HOME_DIR/dotfiles/wl-clip-persist.service" "$UNIT"
+clip
+[[ "$rc" == 0 && -L "$UNIT" ]] && cmp -s "$REPO_ROOT/files/clipboard/wl-clip-persist.service" "$HOME_DIR/dotfiles/wl-clip-persist.service"
+check "symlink: a unit file linked into the home directory is written through the link, the link stays" $?
+
 # --- static ---------------------------------------------------------------------------------------------
 M="$REPO_ROOT/modules/30-clipboard.sh"
 grep -q 'e26fde01c13922e3a65049dafb7d5adfbc52626e' "$M" && grep -q 'v0.5.0' "$M"

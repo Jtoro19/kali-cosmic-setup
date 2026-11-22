@@ -268,18 +268,6 @@ grep -q 'total changes: 0' "$WORK/out"
 check "shortcuts: no duplicate entry is added on a second run" $?
 
 # S5: never write through sudo into config the invoking user does not own.
-cat >"$WORK/bin/stat" <<'EOS'
-#!/bin/sh
-# FAKE_NOT_OWNED: paths (colon separated) that "belong to root".
-if [ "$1" = "-c" ] && [ "$2" = "%u" ]; then
-  p="${4:-$3}"
-  old="$IFS"; IFS=:
-  for n in $FAKE_NOT_OWNED; do [ "$p" = "$n" ] && { echo $(($(/usr/bin/id -u) + 1)); exit 0; }; done
-  IFS="$old"
-fi
-exec /usr/bin/stat "$@"
-EOS
-chmod +x "$WORK/bin/stat"
 reset_state
 mkdir -p "$CFG"
 FAKE_NOT_OWNED="$CFG" cs

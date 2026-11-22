@@ -103,6 +103,11 @@ _fastfetch_images() {
     return 0
   fi
 
+  if ! user_path_writable "$images" || ! user_path_writable "$bad"; then
+    log_warn "skipping the fastfetch image pool"
+    return 0
+  fi
+
   # A source is done when any <prefix>-* file exists in images or bad.
   for entry in "${_FASTFETCH_SOURCES[@]}"; do
     prefix="${entry%%|*}"

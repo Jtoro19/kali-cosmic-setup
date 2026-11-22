@@ -98,6 +98,15 @@ changes.
   directory, checks the SHA-256 and only then moves the file to `<dest>`. An
   empty or malformed checksum is refused; there is no unverified mode.
   Dry-run downloads nothing.
+- `user_path_writable <path>` / `user_path_resolve <path>`: the guard for every
+  file below `$HOME`. It fails with one warning when the file or an existing
+  directory above it is not owned by the invoking user, and when a symlink
+  points outside `$HOME`; a symlink inside `$HOME` is resolved so the target is
+  written and the link stays. `install_file`, `ensure_line`, `ensure_block`,
+  `ensure_ini_line`, `remove_line` and `remove_exact_block` call it themselves
+  (a skipped file is not an error); call it before any other direct write
+  (`mkdir`, `cp`, `rm`, a generated file) in `$HOME`. Nothing in `$HOME` is ever
+  written through sudo.
 - `rootpath <abs-path>`: the path under the test-only `KCS_ROOT` prefix
   (unchanged in a real run). Use it for system paths a test must redirect.
 - `FILE_CHANGED` is 1 after `install_file` or a helper built on it changed a

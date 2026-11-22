@@ -141,6 +141,105 @@ _priv_run() {
   fi
 }
 
+# _priv_run_tmp <tmp> <target-path> <cmd...>: like _priv_run, for a command that
+# installs the temp file <tmp>: the temp file is removed whether the command
+# succeeds or fails, and a failure still ends the module (fail-fast, as run).
+_priv_run_tmp() {
+  local tmp="$1" rc=0
+  shift
+  (_priv_run "$@") || rc=$?
+  rm -f -- "$tmp"
+  if ((rc != 0)); then
+    exit "$rc"
+  fi
+}
+
+# --- Files in the invoking user's home ----------------------------------------
+
+# Paths already warned about (one warning per path and run). Kept in the
+# caller's shell, so the checks below set _UPATH instead of printing in a
+# command substitution.
+declare -A _USER_PATH_WARNED=()
+_UPATH_HOME="" _UPATH_UID="" _UPATH_USER=""
+
+_user_path_warn_once() { # <path> <message>
+  if [[ -z "${_USER_PATH_WARNED[$1]:-}" ]]; then
+    _USER_PATH_WARNED["$1"]=1
+    log_warn "$2"
+  fi
+}
+
+# _user_path_check <path>: sets _UPATH to the path to write and returns 0, or
+# warns and returns 1 (the caller skips the file). Only paths below $HOME are
+# checked; any other path is returned unchanged.
+# - A symlink (the file itself or a directory above it) is followed with
+#   readlink only when its target is inside $HOME; a target outside is
+#   skipped, never replaced by a regular file.
+# - Every existing path from the target up to (not including) $HOME must be
+#   owned by the invoking user. Files that someone else owns are never written
+#   through sudo: install_file and friends would pick sudo for a location the
+#   user cannot write, and a file in $HOME that root owns is not ours to rewrite.
+_user_path_check() {
+  local path="$1" canon plain p i
+  local -a chain=() owners=()
+  _UPATH="$path"
+  if [[ -z "$_UPATH_HOME" ]]; then
+    _UPATH_HOME="$(readlink -m -- "$HOME")"
+    _UPATH_UID="$(id -u)"
+    _UPATH_USER="$(id -un)"
+  fi
+  canon="$(readlink -m -- "$path")"
+  plain="$path"
+  case "$path" in
+    /*/./* | */../* | *//* | */. | */.. | */) plain="$(realpath -m -s -- "$path")" ;;
+    /*) ;;
+    *) plain="$(realpath -m -s -- "$path")" ;;
+  esac
+  if [[ "$plain" != "$_UPATH_HOME"/* && "$plain" != "$_UPATH_HOME" && "$canon" != "$_UPATH_HOME"/* ]]; then
+    return 0
+  fi
+  if [[ "$canon" != "$_UPATH_HOME"/* ]]; then
+    _user_path_warn_once "$plain" "$path is a symlink to $canon, outside $HOME: not writing through it"
+    return 1
+  fi
+  p="$canon"
+  while [[ "$p" != "$_UPATH_HOME" && -n "$p" ]]; do
+    if [[ -e "$p" || -L "$p" ]]; then
+      chain+=("$p")
+    fi
+    p="${p%/*}"
+  done
+  if ((${#chain[@]} > 0)); then
+    mapfile -t owners < <(stat -c %u -- "${chain[@]}" 2>/dev/null)
+    for i in "${!chain[@]}"; do
+      if [[ "${owners[i]:-}" != "$_UPATH_UID" ]]; then
+        _user_path_warn_once "${chain[i]}" "${chain[i]} is not owned by $_UPATH_USER: not writing anything there (fix it with: sudo chown -R $_UPATH_USER ${chain[i]})"
+        return 1
+      fi
+    done
+  fi
+  if [[ "$canon" != "$plain" ]]; then
+    _UPATH="$canon"
+  fi
+  return 0
+}
+
+# user_path_writable <path>: true when this module may write the path: below
+# $HOME it is owned by the invoking user (or does not exist yet under a
+# directory that is) and any symlink on the way stays inside $HOME. Otherwise
+# it warns (once per path) and returns 1. Every helper that writes a file
+# calls it, so no module ever writes a file in $HOME through sudo.
+user_path_writable() {
+  _user_path_check "$1"
+}
+
+# user_path_resolve <path>: like user_path_writable, and prints the path to
+# write (a symlink resolved to its target inside $HOME, else the path itself).
+user_path_resolve() {
+  _user_path_check "$1" || return 1
+  printf '%s\n' "$_UPATH"
+}
+
 # --- File helpers -----------------------------------------------------------
 
 # backup_file <path>: copy to <path>.bak.<YYYYmmdd-HHMMSS>, once per run.
@@ -166,6 +265,8 @@ install_file() {
     log_error "install_file: source not found: $src"
     return 1
   fi
+  _user_path_check "$dest" || return 0
+  dest="$_UPATH"
   if [[ -f "$dest" ]] && cmp -s -- "$src" "$dest"; then
     return 0
   fi
@@ -206,6 +307,8 @@ install_template() {
 # ensure_line <file> <line>: append the line only if not already present.
 ensure_line() {
   local file="$1" line="$2" prefix=""
+  _user_path_check "$file" || return 0
+  file="$_UPATH"
   if [[ -f "$file" ]] && grep -qxF -- "$line" "$file"; then
     return 0
   fi
@@ -232,6 +335,8 @@ ensure_block() {
   local end="# <<< kali-cosmic-setup:${name} <<<"
   local tmp current mode="0644" action
 
+  _user_path_check "$file" || return 0
+  file="$_UPATH"
   tmp="$(mktemp)"
 
   if [[ -f "$file" ]] && grep -qxF -- "$begin" "$file"; then
@@ -268,8 +373,7 @@ ensure_block() {
   log_change "$action block '$name' in $file"
   backup_file "$file"
   _priv_run "$file" mkdir -p -- "$(dirname "$file")"
-  _priv_run "$file" install -m "$mode" -- "$tmp" "$file"
-  rm -f -- "$tmp"
+  _priv_run_tmp "$tmp" "$file" install -m "$mode" -- "$tmp" "$file"
 }
 
 # --- Paths and system checks ------------------------------------------------
@@ -691,60 +795,82 @@ detect_gpu_vendors() {
   printf '%s\n' "${out[*]:-}"
 }
 
-# ensure_ini_line <file> <section> <key=value>: make sure the exact line is
-# present under [section]. Creates the file or section when missing. If the
-# key already exists with a different value, warn and leave it alone, unless
-# the optional 4th argument is "replace", which rewrites that key in place.
+# awk helpers shared by the ensure_ini_line programs: a trailing CR (a CRLF
+# file) is ignored when comparing, and a key matches with optional blanks around
+# the "=" ("key = value" is the same key as "key=value").
+# shellcheck disable=SC2016  # awk program, not shell
+_INI_AWK_LIB='
+function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
+function chomp(s) { if (substr(s, length(s)) == "\r") s = substr(s, 1, length(s) - 1); return s }
+function cr(s) { return (substr(s, length(s)) == "\r") ? "\r" : "" }
+function keyof(l,   p) { p = index(l, "="); if (!p) return ""; return trim(substr(l, 1, p - 1)) }
+function valof(l,   p) { p = index(l, "="); return trim(substr(l, p + 1)) }
+BEGIN { sec = ENVIRON["SEC"]; e = ENVIRON["ENTRY"]; k = keyof(e); ev = valof(e) }
+'
+
+# ensure_ini_line <file> <section> <key=value>: make sure the key has this value
+# under [section]. Creates the file or section when missing. If the key already
+# exists with a different value, warn and leave it alone, unless the optional 4th
+# argument is "replace", which rewrites that key in place. CRLF files keep their
+# line endings; "key = value" counts as key=value. The file is resolved and
+# guarded like every user file (see user_path_writable).
+# shellcheck disable=SC2016  # awk programs, not shell
 ensure_ini_line() {
   local file="$1" section="$2" entry="$3" policy="${4:-keep}" key tmp mode="0644" state
   key="${entry%%=*}"
-  tmp="$(mktemp)"
+  _user_path_check "$file" || return 0
+  file="$_UPATH"
   if [[ -f "$file" ]]; then
-    state="$(SEC="[$section]" ENTRY="$entry" KEY="$key" awk '
-      BEGIN { sec = ENVIRON["SEC"]; e = ENVIRON["ENTRY"]; k = ENVIRON["KEY"] }
-      /^\[/ { cur = ($0 == sec) }
-      cur && $0 == e { print "present"; exit }
-      cur && index($0, k "=") == 1 { print "conflict"; exit }
-    ' "$file")"
+    if ! state="$(SEC="[$section]" ENTRY="$entry" awk "$_INI_AWK_LIB"'
+      { line = trim(chomp($0)) }
+      line ~ /^\[/ { cur = (line == sec); next }
+      cur && keyof(line) == k { print (valof(line) == ev) ? "present" : "conflict"; exit }
+    ' "$file")"; then
+      log_error "cannot read $file"
+      return 1
+    fi
     if [[ "$state" == "present" ]]; then
-      rm -f -- "$tmp"
       return 0
     fi
     if [[ "$state" == "conflict" && "$policy" != "replace" ]]; then
       log_warn "$file: key '$key' under [$section] has another value; leaving it"
-      rm -f -- "$tmp"
       return 0
     fi
+    tmp="$(mktemp)"
     if [[ "$state" == "conflict" ]]; then
       # policy=replace: rewrite the first matching key in the section.
-      SEC="[$section]" ENTRY="$entry" KEY="$key" awk '
-        BEGIN { sec = ENVIRON["SEC"]; e = ENVIRON["ENTRY"]; k = ENVIRON["KEY"] }
-        /^\[/ { cur = ($0 == sec) }
-        cur && !done && index($0, k "=") == 1 { print e; done = 1; next }
+      SEC="[$section]" ENTRY="$entry" awk "$_INI_AWK_LIB"'
+        { line = trim(chomp($0)) }
+        line ~ /^\[/ { cur = (line == sec); print; next }
+        cur && !done && keyof(line) == k { print e cr($0); done = 1; next }
         { print }
-      ' "$file" >"$tmp"
+      ' "$file" >"$tmp" || {
+        rm -f -- "$tmp"
+        return 1
+      }
       mode="$(stat -c %a -- "$file")"
       log_change "set '$entry' under [$section] in $file"
       backup_file "$file"
-      _priv_run "$file" install -m "$mode" -- "$tmp" "$file"
-      rm -f -- "$tmp"
+      _priv_run_tmp "$tmp" "$file" install -m "$mode" -- "$tmp" "$file"
       return 0
     fi
-    SEC="[$section]" ENTRY="$entry" awk '
-      BEGIN { sec = ENVIRON["SEC"]; e = ENVIRON["ENTRY"] }
+    SEC="[$section]" ENTRY="$entry" awk "$_INI_AWK_LIB"'
       { print }
-      $0 == sec && !done { print e; done = 1; found = 1 }
+      trim(chomp($0)) == sec && !done { print e cr($0); done = 1; found = 1 }
       END { if (!found) { print ""; print sec; print e } }
-    ' "$file" >"$tmp"
+    ' "$file" >"$tmp" || {
+      rm -f -- "$tmp"
+      return 1
+    }
     mode="$(stat -c %a -- "$file")"
   else
+    tmp="$(mktemp)"
     printf '[%s]\n%s\n' "$section" "$entry" >"$tmp"
   fi
   log_change "add '$entry' under [$section] in $file"
   backup_file "$file"
   _priv_run "$file" mkdir -p -- "$(dirname "$file")"
-  _priv_run "$file" install -m "$mode" -- "$tmp" "$file"
-  rm -f -- "$tmp"
+  _priv_run_tmp "$tmp" "$file" install -m "$mode" -- "$tmp" "$file"
 }
 
 # --- Login shell and legacy text ---------------------------------------------
@@ -786,6 +912,8 @@ login_rc_file() {
 remove_line() {
   local file="$1" line="$2" prev="${3:-}" tmp mode
   [[ -f "$file" ]] || return 0
+  _user_path_check "$file" || return 0
+  file="$_UPATH"
   tmp="$(mktemp)"
   LINE="$line" PREV="$prev" awk '
     BEGIN { line = ENVIRON["LINE"]; prev = ENVIRON["PREV"] }
@@ -810,8 +938,7 @@ remove_line() {
   mode="$(stat -c %a -- "$file")"
   log_change "remove legacy line from $file: $line"
   backup_file "$file"
-  _priv_run "$file" install -m "$mode" -- "$tmp" "$file"
-  rm -f -- "$tmp"
+  _priv_run_tmp "$tmp" "$file" install -m "$mode" -- "$tmp" "$file"
 }
 
 # remove_exact_block <file> <multiline-text>: remove the first exact contiguous
@@ -821,6 +948,8 @@ remove_line() {
 remove_exact_block() {
   local file="$1" text="$2" tmp mode
   [[ -f "$file" && -n "$text" ]] || return 0
+  _user_path_check "$file" || return 0
+  file="$_UPATH"
   tmp="$(mktemp)"
   TEXT="$text" awk '
     BEGIN { m = split(ENVIRON["TEXT"], pat, "\n") }
@@ -849,8 +978,7 @@ remove_exact_block() {
   mode="$(stat -c %a -- "$file")"
   log_change "remove legacy block from $file: ${text%%$'\n'*} ..."
   backup_file "$file"
-  _priv_run "$file" install -m "$mode" -- "$tmp" "$file"
-  rm -f -- "$tmp"
+  _priv_run_tmp "$tmp" "$file" install -m "$mode" -- "$tmp" "$file"
 }
 
 # user_systemd_ready: true when `systemctl --user` can reach the invoking user's
@@ -902,13 +1030,36 @@ _gsettings_prepare() {
   return 1
 }
 
+# _gsettings_get <schema> <key>: sets _GS_VALUE to the printed value; returns
+# gsettings' status. The value goes through a file, not a command substitution:
+# a daemon that outlives gsettings and holds a pipe open would block the
+# substitution. Every gsettings call is cut off after 20 seconds (a missing or
+# hung dconf service must not hang the install) and reads no terminal input.
+_gsettings_get() {
+  local tmp rc=0
+  tmp="$(mktemp)"
+  timeout "${KCS_GSETTINGS_TIMEOUT:-20}" "${_GSETTINGS_PREFIX[@]}" gsettings get "$1" "$2" >"$tmp" 2>/dev/null </dev/null || rc=$?
+  _GS_VALUE="$(<"$tmp")"
+  rm -f -- "$tmp"
+  return "$rc"
+}
+
+# _gsettings_run <args...>: gsettings with the timeout, no input and no output
+# (the status is what counts).
+_gsettings_run() {
+  timeout "${KCS_GSETTINGS_TIMEOUT:-20}" "${_GSETTINGS_PREFIX[@]}" gsettings "$@" </dev/null >/dev/null 2>&1
+}
+
 # ensure_gsetting <schema> <key> <value>: set a GSettings key only when the
 # current value differs. <value> uses gsettings' printed form (strings keep
 # their single quotes, for example "'prefer-dark'"). Without gsettings, a way to
 # reach a session bus (see _gsettings_prepare) or the schema, warn and skip
-# without failing. The read is side-effect free, so dry-run is accurate.
+# without failing. A failing set is a warning, not a module failure, and the
+# value is read back after the set: a backend that accepts the write and drops
+# it (no dconf service behind the bus) is reported. The read is side-effect
+# free, so dry-run is accurate.
 ensure_gsetting() {
-  local schema="$1" key="$2" value="$3" current tmp rc=0
+  local schema="$1" key="$2" value="$3" current
   if ! command -v gsettings >/dev/null 2>&1; then
     log_warn "gsettings not found; skipping $schema $key"
     return 0
@@ -917,19 +1068,25 @@ ensure_gsetting() {
     log_warn "no session bus and no dbus-run-session; skipping gsettings $schema $key (run it from a desktop session, or install dbus-bin)"
     return 0
   fi
-  # The value goes through a file, not a command substitution: a daemon that
-  # outlives gsettings and holds a pipe open would block the substitution.
-  tmp="$(mktemp)"
-  "${_GSETTINGS_PREFIX[@]}" gsettings get "$schema" "$key" >"$tmp" 2>/dev/null </dev/null || rc=$?
-  current="$(<"$tmp")"
-  rm -f -- "$tmp"
-  if ((rc != 0)); then
+  if ! _gsettings_get "$schema" "$key"; then
     log_warn "cannot read gsettings $schema $key; skipping"
     return 0
   fi
+  current="$_GS_VALUE"
   if [[ "$current" == "$value" ]]; then
     return 0
   fi
+  if [[ "$DRY_RUN" == "1" ]]; then
+    log_change "gsettings set $schema $key $value (was $current)"
+    printf '[dry-run] would run: gsettings set %s %s %s\n' "$schema" "$key" "$value"
+    return 0
+  fi
+  if ! run_may_fail _gsettings_run set "$schema" "$key" "$value"; then
+    log_warn "gsettings set $schema $key $value failed or timed out; leaving it"
+    return 0
+  fi
   log_change "gsettings set $schema $key $value (was $current)"
-  run "${_GSETTINGS_PREFIX[@]}" gsettings set "$schema" "$key" "$value"
+  if ! _gsettings_get "$schema" "$key" || [[ "$_GS_VALUE" != "$value" ]]; then
+    log_warn "gsettings $schema $key reads ${_GS_VALUE:-nothing} after the set: the value did not persist (is a dconf service running for this session?)"
+  fi
 }

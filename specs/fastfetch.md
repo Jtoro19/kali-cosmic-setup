@@ -68,6 +68,14 @@ or `bad`, so a second run clones nothing.
 
 None.
 
+## User files
+
+The image pool directories and the rc file go through the shared guard
+`user_path_writable` (lib/common.sh): a directory or file owned by another user
+is skipped with a warning (the pool is not fetched; never a write through sudo),
+and a symlink is followed only when its target is inside `$HOME` (an `images`
+link pointing elsewhere is not filled).
+
 ## Idempotency check
 
 Packages when missing; a source only when no `<prefix>-*` file exists; the block
