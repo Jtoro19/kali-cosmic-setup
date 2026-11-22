@@ -12,9 +12,21 @@ mkdir -p "$WORK/modules" "$WORK/bin" "$WORK/cache"
 cat >"$WORK/bin/sudo" <<'EOS'
 #!/bin/sh
 echo "$*" >>"$SUDO_LOG"
+# FAKE_SUDO_MODE: password (default), passwordless (`-n -k true` works, `-v`
+# fails like sudo without a terminal under verifypw=all) or cached (only a
+# cached timestamp lets `-n` commands work: `-n -k true` fails).
+mode="${FAKE_SUDO_MODE:-password}"
 case "$1" in
-  -v) [ -n "${FAKE_SUDO_FAIL:-}" ] && exit 1; exit 0 ;;
-  -n) shift; [ "$1" = "-v" ] && exit 0; exec "$@" ;;
+  -v) [ "$mode" = passwordless ] && exit 1; [ -n "${FAKE_SUDO_FAIL:-}" ] && exit 1; exit 0 ;;
+  -n)
+    shift
+    if [ "$1" = "-k" ]; then
+      [ "$mode" = passwordless ] && { shift; exec "$@"; }
+      exit 1
+    fi
+    [ "$1" = "-v" ] && exit 0
+    exec "$@"
+    ;;
 esac
 exit 99
 EOS
@@ -47,7 +59,7 @@ inst() {
 }
 
 inst "$REPO_ROOT/install.sh" --all
-if [[ "$(head -n1 "$WORK/sudo.log")" == "-v" && "$rc" == "0" && -e "$WORK/ran" ]]; then
+if [[ "$(grep -vx -- '-n -k true' "$WORK/sudo.log" | head -n1)" == "-v" && "$rc" == "0" && -e "$WORK/ran" ]]; then
   check "real run: sudo -v first, module ran" 0
 else check "real run: sudo -v first, module ran" 1; fi
 if grep -qx -- '-n touch .*/ran' "$WORK/sudo.log"; then
@@ -76,6 +88,30 @@ inst "$REPO_ROOT/install.sh" --list
 if [[ "$rc" == "0" && ! -s "$WORK/sudo.log" ]]; then
   check "--list never calls sudo" 0
 else check "--list never calls sudo" 1; fi
+
+# passwordless sudo: no prompt, no timestamp check, no keepalive
+FAKE_SUDO_MODE=passwordless inst "$REPO_ROOT/install.sh" --all
+if [[ "$rc" == "0" && -e "$WORK/ran" ]] && ! grep -qx -- '-v' "$WORK/sudo.log" &&
+  ! grep -qx -- '-n -v' "$WORK/sudo.log"; then
+  check "passwordless sudo: no sudo -v, no timestamp check, no keepalive" 0
+else check "passwordless sudo: no sudo -v, no timestamp check, no keepalive" 1; fi
+if head -n1 "$WORK/sudo.log" | grep -qx -- '-n -k true' && grep -q 'needs no password' "$WORK/out" &&
+  ! grep -q 'type your password' "$WORK/out"; then
+  check "passwordless sudo: probed with -n -k true and said so" 0
+else check "passwordless sudo: probed with -n -k true and said so" 1; fi
+
+# password sudo keeps the old flow: one sudo -v, then the timestamp check
+inst "$REPO_ROOT/install.sh" --all
+if [[ "$(sed -n 2p "$WORK/sudo.log")" == "-v" ]] && grep -qx -- '-n -v' "$WORK/sudo.log" &&
+  grep -q 'type your password' "$WORK/out"; then
+  check "password sudo: prompts once with sudo -v and checks the timestamp" 0
+else check "password sudo: prompts once with sudo -v and checks the timestamp" 1; fi
+
+# a cached timestamp must not count as passwordless
+FAKE_SUDO_MODE=cached inst "$REPO_ROOT/install.sh" --all
+if [[ "$rc" == "0" ]] && grep -qx -- '-v' "$WORK/sudo.log" && ! grep -q 'needs no password' "$WORK/out"; then
+  check "cached timestamp: still prompts with sudo -v" 0
+else check "cached timestamp: still prompts with sudo -v" 1; fi
 
 if ((failures > 0)); then
   printf '%d check(s) failed\n' "$failures"

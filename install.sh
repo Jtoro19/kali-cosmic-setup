@@ -172,11 +172,18 @@ setup_logging() {
   TEE_PID=$!
 }
 
-# start_sudo: ask for the sudo password once, then keep the timestamp fresh in
+# start_sudo: unless sudo needs no password, ask for it once, then keep the timestamp fresh in
 # the background so no later step prompts. Stops the installer when sudo
 # cannot be authenticated. Sets KEEPALIVE_PID.
 KEEPALIVE_PID=""
 start_sudo() {
+  # `-n -k true` ignores any cached timestamp, so it succeeds only when sudo
+  # needs no password at all (NOPASSWD). Plain `sudo -v` would still demand one
+  # (and a terminal) when another matching sudoers rule requires it (verifypw).
+  if sudo -n -k true >/dev/null 2>&1; then
+    log_info "sudo needs no password; the rest runs unattended"
+    return 0
+  fi
   log_info "sudo is needed: type your password once; the rest runs unattended"
   if ! sudo -v; then
     log_error "sudo authentication failed; nothing was changed. Run the installer again and type your password when asked"

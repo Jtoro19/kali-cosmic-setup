@@ -17,9 +17,21 @@ make_fakes() {
   cat >"$bin/sudo" <<'EOS'
 #!/bin/sh
 echo "$*" >>"${SUDO_LOG:-${FAKE_STATE:-/dev/null}/sudo.log}"
+# FAKE_SUDO_MODE: password (default), passwordless (`-n -k true` works, `-v`
+# fails like sudo without a terminal under verifypw=all) or cached (only a
+# cached timestamp lets `-n` commands work: `-n -k true` fails).
+mode="${FAKE_SUDO_MODE:-password}"
 case "$1" in
-  -v) [ -n "${FAKE_SUDO_FAIL:-}" ] && exit 1; exit 0 ;;
-  -n) shift; [ "$1" = "-v" ] && exit 0; exec "$@" ;;
+  -v) [ "$mode" = passwordless ] && exit 1; [ -n "${FAKE_SUDO_FAIL:-}" ] && exit 1; exit 0 ;;
+  -n)
+    shift
+    if [ "$1" = "-k" ]; then
+      [ "$mode" = passwordless ] && { shift; exec "$@"; }
+      exit 1
+    fi
+    [ "$1" = "-v" ] && exit 0
+    exec "$@"
+    ;;
 esac
 exit 99
 EOS

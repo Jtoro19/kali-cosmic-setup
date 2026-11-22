@@ -45,7 +45,8 @@ keyboard module without the menu (`keep` leaves the current one). It is parsed
 now and used once the keyboard module exists.
 
 **Type the password once.** A real run asks for the sudo password at the start
-(`sudo -v`) and keeps it valid in the background, so the rest runs unattended;
+(`sudo -v`) and keeps it valid in the background, so the rest runs unattended
+(with passwordless sudo there is no prompt at all);
 if the password is wrong the installer stops before changing anything. Every
 step is non-interactive (`apt-get -y` with `DEBIAN_FRONTEND=noninteractive`,
 existing config files kept, `GIT_TERMINAL_PROMPT=0`, stdin closed). A module
