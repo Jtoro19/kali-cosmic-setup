@@ -1,0 +1,38 @@
+# Dev: development tools from Kali. One per line, # starts a comment.
+# Port of the eos dev.pacman list; see specs/packages-dev.md for every rename and
+# every dropped entry. VS Code (Microsoft apt repo), Claude Code (Anthropic apt
+# repo) and uv, engram, gentle-ai (checksum-verified GitHub releases) are
+# installed by modules/16-packages-dev.sh, not from this list.
+
+# Toolchains
+build-essential
+git
+golang-go
+rustc
+cargo
+just
+
+# Python (python3 itself ships with Kali; uv comes from its release)
+python3
+python3-venv
+python3-pip
+python3-pil
+python3-pyqt5
+python3-reportlab
+
+# Containers (docker-compose is Compose v2, the `docker compose` plugin)
+docker.io
+docker-buildx
+docker-compose
+
+# Database (bound to 127.0.0.1 by the module)
+mariadb-server
+
+# Tools
+meld
+shellcheck
+
+# Android
+adb
+fastboot
+android-udev-rules

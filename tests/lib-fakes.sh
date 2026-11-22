@@ -115,6 +115,12 @@ for a in "$@"; do
               echo "$a" >>"$FAKE_STATE/installed"
               # brave-keyring's postinst links its key into trusted.gpg.d (global
               # trust); installing brave-browser pulls brave-keyring in.
+              # FAKE_CODE_ADDS_REPO: the code deb's postinst leaves global trust behind.
+              if [ "$a" = code ] && [ -n "${FAKE_CODE_ADDS_REPO:-}" ]; then
+                mkdir -p "${KCS_ROOT:-}/etc/apt/trusted.gpg.d" "${KCS_ROOT:-}/usr/share/keyrings"
+                echo key >"${KCS_ROOT:-}/etc/apt/trusted.gpg.d/microsoft.gpg"
+                echo key >"${KCS_ROOT:-}/usr/share/keyrings/microsoft.gpg"
+              fi
               if [ "$a" = brave-browser ]; then
                 mkdir -p "${KCS_ROOT:-}/etc/apt/trusted.gpg.d"
                 ln -sf /usr/share/keyrings/brave-browser-archive-keyring.gpg \
@@ -288,7 +294,26 @@ EOS
   # getent passwd <name>: users listed in $FAKE_STATE/users exist.
   cat >"$bin/getent" <<'EOS'
 #!/bin/sh
-[ "$1" = passwd ] && grep -qx -- "$2" "$FAKE_STATE/users" 2>/dev/null
+case "$1" in
+  passwd) grep -qx -- "$2" "$FAKE_STATE/users" 2>/dev/null ;;
+  # `getent group <g>`: groups listed in $FAKE_STATE/groups exist.
+  group) grep -qx -- "$2" "$FAKE_STATE/groups" 2>/dev/null ;;
+  *) exit 1 ;;
+esac
+EOS
+
+  # id -nG: the groups of the user in $FAKE_STATE/usergroups; every other call
+  # is the real id. usermod -aG <group> <user>: logs and records the group.
+  cat >"$bin/id" <<'EOS'
+#!/bin/sh
+if [ "$1" = "-nG" ]; then cat "$FAKE_STATE/usergroups" 2>/dev/null; exit 0; fi
+exec /usr/bin/id "$@"
+EOS
+  cat >"$bin/usermod" <<'EOS'
+#!/bin/sh
+echo "usermod $*" >>"$FAKE_STATE/all.log"
+echo "$*" >>"$FAKE_STATE/usermod.log"
+echo "$2" >>"$FAKE_STATE/usergroups"
 EOS
 
   # systemd-sysusers / systemd-tmpfiles: log the call; sysusers creates the
@@ -313,6 +338,10 @@ EOS
 echo "debconf-show $*" >>"$FAKE_STATE/all.log"
 case "|${FAKE_FAIL:-}|" in *"|debconf-show $*|"*) exit 1 ;; esac
 echo "  greetd/daemon_name: /usr/sbin/greetd"
+# A preseeded answer for the code package (see debconf-set-selections below).
+if [ "$(cat "$FAKE_STATE/debconf-code" 2>/dev/null)" = false ]; then
+  echo "* code/add-microsoft-repo: false"
+fi
 if [ -s "$FAKE_STATE/debconf" ]; then
   echo "* shared/default-x-display-manager: $(cat "$FAKE_STATE/debconf")"
 fi
@@ -328,6 +357,7 @@ while IFS= read -r line; do
   echo "$line" >>"$FAKE_STATE/debconf.log"
   set -- $line
   if [ "$2" = shared/default-x-display-manager ]; then echo "$4" >"$FAKE_STATE/debconf"; fi
+  if [ "$2" = code/add-microsoft-repo ]; then echo "$4" >"$FAKE_STATE/debconf-code"; fi
 done
 EOS
 
