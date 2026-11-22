@@ -125,7 +125,7 @@ base_line="$(grep 'greetd' "$APT" | head -n1)"
 missing_base=""
 for p in greetd xwayland pipewire pipewire-pulse pipewire-alsa wireplumber libspa-0.2-bluetooth \
   bluez network-manager power-profiles-daemon gnome-keyring libpam-gnome-keyring \
-  dbus-user-session polkitd xdg-desktop-portal xdg-user-dirs accountsservice upower; do
+  dbus-user-session polkitd xdg-desktop-portal xdg-user-dirs accountsservice upower kali-defaults-desktop; do
   [[ "$base_line" == *" $p"* ]] || missing_base="$missing_base $p"
 done
 [[ -z "$missing_base" ]]

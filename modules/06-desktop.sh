@@ -41,6 +41,12 @@ _DESKTOP_BASE=(
   xdg-user-dirs
   accountsservice
   upower
+  # Kali's settings for graphical desktops, which every Kali desktop install
+  # pulls in through kali-desktop-core: the Firefox ESR policies, bookmarks and
+  # homepage, Chromium's master_preferences and bookmarks, fallback fonts. A
+  # "default tools" install without a desktop lacks it, so the browsers would
+  # start with upstream defaults instead of Kali's.
+  kali-defaults-desktop
 )
 
 # Other display managers to turn off so Debian's greetd.service owns

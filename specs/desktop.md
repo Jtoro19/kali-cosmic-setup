@@ -62,8 +62,9 @@ The four files shipped under `files/desktop/` are copied from upstream
    `pipewire-pulse`, `pipewire-alsa`, `wireplumber`, `libspa-0.2-bluetooth`,
    `bluez`, `network-manager`, `power-profiles-daemon`, `gnome-keyring`,
    `libpam-gnome-keyring`, `dbus-user-session`, `polkitd`,
-   `xdg-desktop-portal`, `xdg-user-dirs`, `accountsservice`, `upower`.
-   No cups, avahi, firewalld, packagekit, flatpak or sshd.
+   `xdg-desktop-portal`, `xdg-user-dirs`, `accountsservice`, `upower`,
+   `kali-defaults-desktop`. No cups, avahi, firewalld, packagekit, flatpak or
+   sshd.
 8. Installs `cosmic-epoch-monorepo` with `--no-install-recommends` (its
    Recommends pull flatpak, packagekit, appstream and apt-config-icons, which
    this repo drops). `cosmic-utils-monorepo` is not installed.
@@ -109,6 +110,27 @@ there because `cosmic-epoch-monorepo` has no maintainer scripts and depends
 only on libraries: nothing else pulls in the audio/bluetooth plumbing, the
 PAM keyring module, the user bus, polkit, portals, accounts and power
 services, or the greetd binary that cosmic-greeter runs.
+
+`kali-defaults-desktop` is Kali's own settings package for graphical
+desktops; every Kali desktop install gets it through `kali-desktop-core`, but a
+"default tools" install without a desktop does not, so Firefox ESR and
+Chromium started with upstream defaults (owner report after the final check).
+It diverts and ships `/usr/share/firefox-esr/distribution/policies.json` and
+`distribution.ini` (Kali homepage, bookmarks toolbar and Kali bookmarks, no
+telemetry, no DNS over HTTPS), `/etc/firefox-esr/kali.js` (CSD titlebars),
+`/etc/chromium/master_preferences` and `/usr/share/chromium/initial_bookmarks.html`
+(Kali homepage and bookmarks, no sign-in, no default-browser prompt; Chromium
+reads them only when it creates a new profile), the homepage under
+`/usr/share/kali-defaults/web`, and a fallback fontconfig file. Its other files
+do not affect COSMIC (checked on the VM from the 2026.4.1 deb): a GSettings
+override for mutter, MATE, nm-applet and GNOME Software, lightdm files (lightdm
+is not installed), `ConditionUser=` drop-ins that let PipeWire also run for
+root, masks for three KDE autostart units, and XDG autostarts that copy missing
+`/etc/skel` files into the home without overwriting (`cp --update=none`), set
+GNOME's automount key from the `noautomount` boot option, and start the
+VirtualBox client only where it exists. The browser packages themselves are
+not installed here: `firefox-esr` comes from the `packages` module and Chromium
+stays whatever the Kali install has.
 
 NetworkManager, bluetooth and the like are enabled by the `services` module,
 not here (same split as the reference).
@@ -239,7 +261,9 @@ harmless while the default target is `multi-user.target`.
    debconf-set-selections`, `echo /usr/sbin/gdm3 | sudo tee
    /etc/X11/default-display-manager` and `sudo ln -sf
    /lib/systemd/system/gdm3.service /etc/systemd/system/display-manager.service`.
-4. `sudo apt-get purge cosmic-epoch-monorepo` (review what `apt-get autoremove`
+4. `sudo apt-get purge cosmic-epoch-monorepo` and, if no other Kali desktop
+   needs it, `kali-defaults-desktop` (its postrm restores the diverted browser
+   files) (review what `apt-get autoremove`
    would remove before running it).
 5. Remove `/etc/apt/sources.list.d/debian-cosmic.sources`,
    `/etc/apt/preferences.d/debian-cosmic` and
