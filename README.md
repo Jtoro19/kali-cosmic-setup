@@ -41,13 +41,15 @@ modified, the original is first saved as `<file>.bak.<timestamp>`
 (`YYYYmmdd-HHMMSS`). Running a module twice changes nothing the second time.
 
 `--keyboard <layout>[:<variant>]|keep` chooses the keyboard layout for the
-keyboard module without the menu (`keep` leaves the current one). It is parsed
-now and used once the keyboard module exists.
+keyboard module without the menu (`keep` leaves the current one); see
+[Keyboard](#keyboard).
 
 **Type the password once.** A real run asks for the sudo password at the start
 (`sudo -v`) and keeps it valid in the background, so the rest runs unattended
 (with passwordless sudo there is no prompt at all);
-if the password is wrong the installer stops before changing anything. Every
+if the password is wrong the installer stops before changing anything. The one
+exception to non-interactivity is the keyboard menu, shown once right after
+`sudo -v` when the keyboard module runs; `--keyboard` skips it. Every
 step is non-interactive (`apt-get -y` with `DEBIAN_FRONTEND=noninteractive`,
 existing config files kept, `GIT_TERMINAL_PROMPT=0`, stdin closed). A module
 stops at its first failed command and the run ends with the list of failed
@@ -64,6 +66,43 @@ system commands, need no privileges and change nothing on the machine.
 
 See `modules/README.md` for the module contract and `specs/README.md` for the
 spec template.
+
+## Keyboard
+
+The layout chosen in the Kali installer does not survive: the keyboard module
+replaces it with the one you pick. It runs last. Right after the sudo prompt
+and before any module, `install.sh` shows a numbered menu once (only when the
+keyboard module is selected):
+
+1. English (US), `us`
+2. English (US), intl. with AltGr dead keys, `us` + `altgr-intl`
+3. English (US), intl. with dead keys, `us` + `intl`
+4. Spanish (Latin American), `latam`
+5. Spanish (Spain), `es`
+6. Keep current: shows the current layout and variant from
+   `/etc/default/keyboard` and changes nothing
+7. Other: any XKB layout and an optional variant, checked against
+   `/usr/share/X11/xkb/rules/evdev.lst`
+
+There is no default: an empty or invalid answer asks again.
+`--keyboard <layout>[:<variant>]` (for example `us:altgr-intl`) and
+`--keyboard keep` skip the menu and are validated the same way; without
+`--keyboard` and without a terminal the run stops before any module (it never
+guesses). `--dry-run` prints the choice and the files it would change.
+
+A chosen layout is written, and the installer layout is removed, from
+`/etc/default/keyboard`, the `keyboard-configuration` debconf answers, the
+initramfs and console keymap cache (so the text console and a disk-unlock
+prompt use it), `localectl` (the X11 keymap the login screen reads) and COSMIC
+(the `xkb_config` of your user and of the login screen user). The module then
+checks all of them and fails loudly if the installer layout is left anywhere.
+The console and the login screen use the new layout in full after a reboot.
+
+COSMIC Settings can still add more layouts afterwards, and Super+Space still
+switches between them. The panel here has no Input Sources applet; add it in
+COSMIC Settings > Desktop > Panel (or right-click the panel) when you want it.
+Picking a layout in the menu makes it the only configured one again; "Keep
+current" never touches layouts you added.
 
 ## Modules
 
@@ -89,6 +128,7 @@ when named with `--only`.
 | audio-resync | no | Works around the COSMIC sound applet showing "No device selected" (pop-os/cosmic-settings-daemon#193): `~/.local/bin/cosmic-audio-resync` restarts `cosmic-settings-daemon` and then `cosmic-panel` a few seconds after login, once both run (the session respawns the panel with its applets; the daemon is started again only if the session does not), COSMIC sessions only, started by the XDG autostart entry `~/.config/autostart/cosmic-audio-resync.desktop`; the hand-made `fix-cosmic-audio.*` files are backed up and removed. Nothing is enabled or restarted during the install; the resync runs at your next login (by hand: `RESYNC_DELAY=0 ~/.local/bin/cosmic-audio-resync`) | `rm ~/.local/bin/cosmic-audio-resync ~/.config/autostart/cosmic-audio-resync.desktop`; if the module migrated hand-made files, restore the backed-up `~/.local/bin/fix-cosmic-audio.sh.bak.<timestamp>` and `~/.config/autostart/fix-cosmic-audio.desktop.bak.<timestamp>` (rename them back without the suffix) |
 | mic-agc | no | Stops browsers and Electron apps from moving the microphone volume with their automatic gain control: a user PipeWire rule `~/.config/pipewire/pipewire-pulse.conf.d/20-block-mic-agc.conf` applies the `block-source-volume` quirk to clients whose binary is `firefox-esr` (Kali's Firefox), `firefox`, `chromium`, `brave`, `code` or `electron` (the COSMIC sound applet, `pavucontrol` and `wpctl` still set the volume). When the rule changes and a user `pipewire-pulse` is running, only that service is restarted (apps using audio reconnect); otherwise the rule applies at next login. A hand-made `99-block-mic-agc.conf` is backed up and removed | `rm ~/.config/pipewire/pipewire-pulse.conf.d/20-block-mic-agc.conf` then `systemctl --user restart pipewire-pulse` |
 | mime | no | Default applications in `~/.config/mimeapps.list` (`[Default Applications]` only, merged key by key, the other entries and sections stay): Brave (`brave-browser.desktop`) for `text/html`, `x-scheme-handler/http`, `https`, `about`, `unknown` and `application/pdf`, PeaZip (`peazip.desktop`) for `application/zip`; a pair is skipped when its app is not installed. `firefox-esr` stays installed, not the default. Depends on `packages`. A different handler in your `~/.config/cosmic-mimeapps.list` would outrank these lines: the run warns and never edits that file | restore `~/.config/mimeapps.list.bak.<timestamp>`, or delete the lines this module added (the ones listed above) |
+| keyboard | no | The keyboard layout you pick (menu, or `--keyboard <layout>[:<variant>]|keep`, see [Keyboard](#keyboard)), applied everywhere and replacing the installer layout: `/etc/default/keyboard` (`pc105`, your layout and variant, no options), the `keyboard-configuration` debconf answers (set non-interactively), `update-initramfs -u` and the console keymap cache (only when something changed), `localectl set-x11-keymap`, and the COSMIC `xkb_config` of your user and of the login screen user (`cosmic-greeter`). Checks afterwards that the installer layout is nowhere. Runs last; full effect after a reboot. COSMIC's keyboard settings are never removed or locked | restore `/etc/default/keyboard.bak.<timestamp>` and `~/.config/cosmic/com.system76.CosmicComp/v1/xkb_config.bak.<timestamp>` (the greeter's is `/var/lib/cosmic-greeter/.config/cosmic/com.system76.CosmicComp/v1/xkb_config.bak.<timestamp>`), run `sudo dpkg-reconfigure keyboard-configuration` and `sudo update-initramfs -u`, then `sudo localectl set-x11-keymap <layout> pc105 <variant>`; or just run `./install.sh --only keyboard --keyboard <other layout>` |
 | aura | yes | Aura, the live wallpaper manager for COSMIC, from its official release `v1.5.0` (SHA-256 pinned in the module and verified twice, x86_64 only) installed like upstream's `--user` install (`~/.local/bin/aura` and `mpvpaper`, desktop entry, icon, metainfo); `mpv`, `libmpv2`, `ffmpeg` and `jq` from Kali; an `aura-restore` user unit that brings the last wallpaper back at login (legacy autostart entries removed, Aura's own autostart kept off); and the Alt+S shortcut for `aura switcher`, added as its own entry into the shared COSMIC shortcut map (other entries and a user binding on Alt+S are never touched). Aura keeps owning the accent color and dark mode while it runs | `systemctl --user disable --now aura-restore.service`; delete `~/.config/systemd/user/aura-restore.service`, `~/.local/bin/aura-restore`, `~/.local/bin/aura`, `~/.local/bin/mpvpaper`, the `io.github.antwny.aura` desktop entry, icon and metainfo under `~/.local/share` and `~/.local/state/kali-cosmic-setup/aura`; remove the Alt+S entry from `~/.config/cosmic/com.system76.CosmicSettings.Shortcuts/v1/custom` (or restore its `.bak.<timestamp>`); restore autostart entries or the Aura config from their `.bak` files; wallpapers are never touched |
 
 ## Recovery

@@ -5,6 +5,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/common.sh
 source "$SCRIPT_DIR/lib/common.sh"
+# shellcheck source=lib/keyboard.sh
+source "$SCRIPT_DIR/lib/keyboard.sh"
 
 # KCS_MODULES_DIR is a test-only override (tests/test-errexit.sh uses fake modules).
 MODULES_DIR="${KCS_MODULES_DIR:-$REPO_ROOT/modules}"
@@ -290,8 +292,8 @@ while (($# > 0)); do
 done
 export DRY_RUN
 
-# Shape check only; the keyboard module validates the layout against the
-# system XKB rules list.
+# Shape check only; the full check against the system XKB rules list runs
+# once the selection is known (kbd_preflight), before sudo.
 if [[ -n "$KEYBOARD_CHOICE" && ! "$KEYBOARD_CHOICE" =~ ^(keep|[A-Za-z0-9_]+(:[A-Za-z0-9_-]+)?)$ ]]; then
   log_error "invalid --keyboard value '$KEYBOARD_CHOICE': use <layout>[:<variant>] or keep"
   exit 2
@@ -342,6 +344,14 @@ done
 CHANGES_FILE="$(mktemp)"
 trap cleanup EXIT
 
+# The keyboard layout must be known before any module runs: validate --keyboard,
+# or fail now when the menu would be needed and there is no terminal.
+if [[ -n "${SELECTED[keyboard]:-}" ]]; then
+  rc=0
+  kbd_preflight || rc=$?
+  ((rc == 0)) || exit "$rc"
+fi
+
 if ((${#SELECTED[@]} > 0)); then
   setup_logging
   if [[ -n "$LOG_FILE" ]]; then
@@ -350,10 +360,12 @@ if ((${#SELECTED[@]} > 0)); then
   if [[ "$DRY_RUN" != "1" && "${KCS_SKIP_SUDO:-0}" != "1" ]]; then
     start_sudo
   fi
-  # HOOK (keyboard module): when the keyboard module is selected and
-  # KEYBOARD_CHOICE is empty, the layout menu runs here, after sudo -v and
-  # before stdin is closed below, so it can read the keyboard. Not implemented
-  # yet; see specs/000-plan.md, "Keyboard design".
+  # The layout menu runs here, once, after sudo and before stdin is closed so it
+  # can read the keyboard (only when the keyboard module is selected and no
+  # --keyboard was given; see specs/keyboard.md).
+  if [[ -n "${SELECTED[keyboard]:-}" ]]; then
+    kbd_ask_if_needed || exit 1
+  fi
   # From here nothing may read the keyboard: any stray prompt sees EOF.
   exec </dev/null
 fi
