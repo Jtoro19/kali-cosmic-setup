@@ -111,12 +111,16 @@ _kbd_apply_debconf() {
   ldesc="$(kbd_layout_desc "$layout")"
   vdesc="$ldesc"
   [[ -n "$variant" ]] && vdesc="$ldesc - $(kbd_variant_desc "$layout" "$variant")"
-  # The display answers (layout, variant) are set too, but they are not compared:
-  # dpkg-reconfigure rewrites them in its own wording.
+  # The display answers are the XKB descriptions of evdev.lst (checked on Kali:
+  # dpkg-reconfigure words them the same). One that differs is stale, for example
+  # left by an interrupted run, so it is rewritten too. The variant display of a
+  # layout without variant is not compared: its wording was not confirmed.
   local -a answers=(
     "modelcode=$_KBD_MODEL" "layoutcode=$layout" "variantcode=$variant" "optionscode="
     "xkb-keymap=$keymap"
   )
+  [[ -z "$ldesc" ]] || answers+=("layout=$ldesc")
+  [[ -z "$variant" || -z "$vdesc" ]] || answers+=("variant=$vdesc")
   for q in "${answers[@]}"; do
     want="${q#*=}"
     have="$(_kbd_dc "$dump" "${q%%=*}")"
@@ -278,6 +282,21 @@ _kbd_verify() {
       bad+=("debconf $_KBD_DEBCONF_PKG/$q is still the installer's \"$x\"")
   done
   [[ -n "$(_kbd_dc "$dump" variant)" ]] || bad+=("debconf $_KBD_DEBCONF_PKG/variant is empty")
+  if [[ -z "$dump" ]]; then
+    log_warn "debconf-show returned nothing for $_KBD_DEBCONF_PKG: the debconf answers could not be read"
+  fi
+  # The display answers must also describe the chosen layout (evdev.lst wording),
+  # which catches a stale one left by an interrupted earlier run.
+  local ldesc vdesc
+  ldesc="$(kbd_layout_desc "$layout")"
+  if [[ -n "$ldesc" && -n "$dump" && "$(_kbd_dc "$dump" layout)" != "$ldesc" ]]; then
+    bad+=("debconf $_KBD_DEBCONF_PKG/layout is \"$(_kbd_dc "$dump" layout)\" (wanted \"$ldesc\")")
+  fi
+  if [[ -n "$variant" && -n "$ldesc" && -n "$dump" ]]; then
+    vdesc="$ldesc - $(kbd_variant_desc "$layout" "$variant")"
+    [[ "$(_kbd_dc "$dump" variant)" == "$vdesc" ]] ||
+      bad+=("debconf $_KBD_DEBCONF_PKG/variant is \"$(_kbd_dc "$dump" variant)\" (wanted \"$vdesc\")")
+  fi
 
   [[ "$(_kbd_localectl_field "X11 Layout")" == "$layout" ]] ||
     bad+=("localectl X11 Layout is \"$(_kbd_localectl_field "X11 Layout")\" (wanted $layout)")
@@ -322,7 +341,11 @@ _kbd_verify() {
     done
     return 1
   fi
-  log_ok "keyboard layout ${layout}${variant:+:$variant} is the only one configured (/etc/default/keyboard, debconf, localectl, console, COSMIC for $me and the login screen)"
+  if ((_KBD_GREETER_SKIPPED)) || [[ -z "$gh" ]]; then
+    log_ok "keyboard layout ${layout}${variant:+:$variant} is the only one configured (/etc/default/keyboard, debconf, localectl, console, COSMIC for $me); the login screen was skipped (see above) and is not configured"
+  else
+    log_ok "keyboard layout ${layout}${variant:+:$variant} is the only one configured (/etc/default/keyboard, debconf, localectl, console, COSMIC for $me and the login screen)"
+  fi
 }
 
 # _kbd_write_default_file <file> <layout> <variant>: /etc/default/keyboard with the

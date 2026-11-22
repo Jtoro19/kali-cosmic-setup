@@ -29,6 +29,8 @@ GXKB="$GH/.config/cosmic/com.system76.CosmicComp/v1/xkb_config"
 cat >"$WORK/bin/debconf-show" <<'EOS'
 #!/bin/sh
 echo "debconf-show $*" >>"$FAKE_STATE/all.log"
+# FAKE_DEBCONF_EMPTY=1: debconf-show prints nothing (an empty read).
+[ -n "${FAKE_DEBCONF_EMPTY:-}" ] && exit 0
 while IFS= read -r l; do
   q="${l%%=*}"; v="${l#*=}"
   echo "* keyboard-configuration/$q: $v"
@@ -527,6 +529,40 @@ check "messages name the real user (id -un), not \$USER" $?
 menu "6"
 ! grep -q 'is replaced by' "$WORK/menu.out" && grep -q 'Keep current' "$WORK/menu.out" && head -n 3 "$WORK/menu.out" | grep -qi 'keep'
 check "menu header does not claim the installer layout is always replaced" $?
+
+# --- final review W1: the display answers must describe the chosen layout ------------------------
+reset_state
+put_installer_layout us altgr-intl
+sed -i 's/^variant=.*/variant=Spanish (Latin American)/' "$FAKE_STATE/kdc"
+FAKE_DC_KEEP_VARIANT=1 kb --keyboard us:altgr-intl
+[[ "$rc" != 0 ]] && grep -q 'debconf keyboard-configuration/variant is "Spanish (Latin American)" (wanted "English (US) - English (intl., with AltGr dead keys)")' "$WORK/out"
+check "W1: a stale display answer left by an interrupted run (codes already right) fails loudly" $?
+reset_state
+put_installer_layout us altgr-intl
+sed -i -e 's/^variant=.*/variant=Spanish (Latin American)/' -e 's/^layout=.*/layout=Spanish (Latin American)/' "$FAKE_STATE/kdc"
+kb --keyboard us:altgr-intl
+[[ "$rc" == 0 && "$(dc layout)" == 'English (US)' && "$(dc variant)" == 'English (US) - English (intl., with AltGr dead keys)' ]]
+check "W1: a stale display answer is rewritten on the next run" $?
+kb --keyboard us:altgr-intl
+[[ "$rc" == 0 ]] && grep -q 'total changes: 0' "$WORK/out"
+check "W1: and the run after that changes nothing" $?
+reset_state
+FAKE_DEBCONF_EMPTY=1 kb --keyboard us:altgr-intl
+grep -q 'debconf-show returned nothing' "$WORK/out"
+check "W1: an empty debconf-show read logs a warning instead of skipping silently" $?
+
+# --- final review W2: the final message says when the login screen was skipped -------------------
+reset_state
+mkdir -p "$WORK/elsewhere"
+mkdir -p "$GH"
+ln -s "$WORK/elsewhere" "$GH/.config"
+kb --keyboard us
+[[ "$rc" == 0 ]] && grep -q 'login screen was skipped' "$WORK/out" && ! grep -q 'and the login screen)' "$WORK/out"
+check "W2: with the greeter step skipped the final message does not claim the login screen" $?
+reset_state
+kb --keyboard us
+grep -q 'and the login screen)' "$WORK/out"
+check "W2: without a skip the final message still names the login screen" $?
 
 if ((failures > 0)); then
   printf '\n--- last install.sh output ---\n'

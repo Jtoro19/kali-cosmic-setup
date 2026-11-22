@@ -207,3 +207,24 @@ tests/test-keyboard.sh
   `--keyboard us:altgr-intl` (the variant-only change that failed before): rc=0, 6
   changes, `is the only one configured`; repeat `total changes: 0`; `--keyboard keep`
   `total changes: 0`; `systemctl --failed` empty; `localectl` us / pc105 / altgr-intl.
+
+## Final review findings (M13b)
+
+14. **Display answers are asserted against evdev.lst.** Checked on the Kali VM
+    (`debconf-show keyboard-configuration` after `us:altgr-intl`): `layout` is
+    "English (US)" and `variant` is "English (US) - English (intl., with AltGr
+    dead keys)", exactly the `evdev.lst` descriptions. So the verification now
+    requires `layout` to equal the layout description and, when a variant is
+    chosen, `variant` to equal "<layout description> - <variant description>"
+    (the apply step treats a differing display answer as stale and rewrites it,
+    so an interrupted earlier run self-heals). The old "differs from the
+    installer's" check stays. The variant display of a layout without variant is
+    not asserted: its wording was not confirmed on the VM. When `debconf-show`
+    returns nothing the run logs a warning instead of skipping silently.
+15. **Final message with a skipped greeter.** When the login screen step was
+    skipped (symlink, existing backup, no greeter user) the final `log_ok` says
+    so instead of claiming the login screen.
+16. **Known limit with xkb-data missing.** A malformed but pattern-valid
+    `--keyboard` value (for example `us:nope`) cannot be validated before
+    `xkb-data` is installed, so it is rejected only after the packages are
+    installed (exit 2, nothing applied).

@@ -53,6 +53,12 @@ ships). Aura upstream: `github.com/antwny/aura`.
   the legacy `aura-autostart.sh`, or the file is Aura's own
   `io.github.antwny.aura.desktop`; a program such as `laura-player` or an
   `echo aura` is not matched).
+  The match is intentionally narrow (the `Exec=` program basename `aura` or
+  `aura-autostart.sh`, or Aura's own desktop id) so unrelated entries are never
+  deleted. It does not catch: a wrapper script with another name that starts
+  Aura, `Exec=env X=1 aura` or `sh -c "aura ..."` (the program is `env`/`sh`),
+  `flatpak run` or other launchers, a renamed copy of the desktop file, or
+  Aura started from a `TryExec=`-only or systemd user unit of the user's own.
 - Aura autostart guard: `.autostart` in `~/.config/aura/config.json` is set to
   `false` with `jq` (other keys kept, file backed up); a missing file is
   reported, an invalid one is left alone with a warning.
