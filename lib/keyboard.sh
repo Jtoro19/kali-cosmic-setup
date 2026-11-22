@@ -92,7 +92,7 @@ kbd_menu() {
   cur_l="${cur%% *}"
   cur_v="${cur#* }"
   [[ "$cur" == *" "* ]] || cur_v=""
-  printf '\nKeyboard layout. The layout chosen in the Kali installer is replaced by the one you pick.\n'
+  printf '\nKeyboard layout. Pick one to replace the layout chosen in the Kali installer, or keep the current one.\n'
   printf '  1) English (US)                                  us\n'
   printf '  2) English (US), intl. with AltGr dead keys       us altgr-intl\n'
   printf '  3) English (US), intl. with dead keys             us intl\n'
@@ -165,6 +165,14 @@ kbd_menu() {
 # Returns 2 for a bad value, 1 for a missing choice.
 kbd_preflight() {
   if [[ -n "${KEYBOARD_CHOICE:-}" ]]; then
+    # xkb-data (the rules list) missing: a real run installs it after the sudo
+    # password is asked (once, see kbd_ask_if_needed) and validates then. A
+    # dry-run cannot install, so it still fails here.
+    if [[ "$KEYBOARD_CHOICE" != keep && "$DRY_RUN" != "1" && ! -r "$(rootpath "$_KBD_LST")" &&
+      "$KEYBOARD_CHOICE" =~ $_KBD_CHOICE_RE ]]; then
+      log_info "the XKB rules list is missing; xkb-data is installed first and the layout is validated then"
+      return 0
+    fi
     kbd_parse_choice "$KEYBOARD_CHOICE" || return 2
     return 0
   fi
@@ -178,7 +186,15 @@ kbd_preflight() {
 # kbd_ask_if_needed: after sudo, before stdin is closed: show the menu once
 # when no --keyboard was given and there is a terminal.
 kbd_ask_if_needed() {
-  [[ -z "${KEYBOARD_CHOICE:-}" ]] || return 0
+  # The rules list comes from xkb-data: install it (and keyboard-configuration)
+  # now that the sudo session exists, before validating or showing "Other".
+  if [[ "$DRY_RUN" != "1" && "${KEYBOARD_CHOICE:-}" != keep && ! -r "$(rootpath "$_KBD_LST")" ]]; then
+    ensure_packages keyboard-configuration xkb-data || return 1
+  fi
+  if [[ -n "${KEYBOARD_CHOICE:-}" ]]; then
+    kbd_parse_choice "$KEYBOARD_CHOICE" || return 2
+    return 0
+  fi
   if [[ ! -t 0 ]]; then
     log_info "dry-run: no --keyboard given and no terminal; the real run asks for the layout in a menu"
     return 0

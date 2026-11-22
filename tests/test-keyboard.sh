@@ -68,7 +68,12 @@ fm="$(sed -n 's/^XKBMODEL="\(.*\)"$/\1/p' "$f")"
 set_q() { grep -v "^$1=" "$FAKE_STATE/kdc" >"$FAKE_STATE/kdc.new"; echo "$1=$2" >>"$FAKE_STATE/kdc.new"; mv -- "$FAKE_STATE/kdc.new" "$FAKE_STATE/kdc"; }
 set_q layoutcode "$fl"; set_q variantcode "$fv"; [ -n "$fm" ] && set_q modelcode "$fm"
 set_q xkb-keymap "$fl${fv:+($fv)}"
-set_q layout "disp-layout:$fl"; [ -n "${FAKE_DC_KEEP_VARIANT:-}" ] || set_q variant "disp-variant:$fl:$fv"
+# The display answers are worded from evdev.lst like the real package does: the same
+# layout gives the same text before and after.
+lst="${KCS_ROOT:-}/usr/share/X11/xkb/rules/evdev.lst"
+ld="$(awk -v l="$fl" '/^! /{ c = ($2 == "layout"); next } c && $1 == l { sub(/^[ \t]*[^ \t]+[ \t]+/, ""); print; exit }' "$lst")"
+vd="$(awk -v l="$fl:" -v v="$fv" '/^! /{ c = ($2 == "variant"); next } c && $1 == v && $2 == l { sub(/^[ \t]*[^ \t]+[ \t]+[^ \t]+[ \t]+/, ""); print; exit }' "$lst")"
+set_q layout "$ld"; [ -n "${FAKE_DC_KEEP_VARIANT:-}" ] || set_q variant "$ld${vd:+ - $vd}"
 sed -i -e "s|^XKBMODEL=.*|XKBMODEL=\"$(get modelcode)\"|" -e "s|^XKBLAYOUT=.*|XKBLAYOUT=\"$(get layoutcode)\"|" \
   -e "s|^XKBVARIANT=.*|XKBVARIANT=\"$(get variantcode)\"|" -e "s|^XKBOPTIONS=.*|XKBOPTIONS=\"$(get optionscode)\"|" "$f"
 EOS
@@ -101,10 +106,15 @@ EOS
 cat >"$WORK/bin/update-initramfs" <<'EOS'
 #!/bin/sh
 echo "update-initramfs $*" >>"$FAKE_STATE/all.log"
+# FAKE_INITRAMFS_CLOBBER_MODEL=1: something rewrites the model in /etc/default/keyboard.
+[ -n "${FAKE_INITRAMFS_CLOBBER_MODEL:-}" ] && sed -i 's|^XKBMODEL=.*|XKBMODEL="pc104"|' "${KCS_ROOT:-}/etc/default/keyboard"
+exit 0
 EOS
 cat >"$WORK/bin/setupcon" <<'EOS'
 #!/bin/sh
 echo "setupcon $*" >>"$FAKE_STATE/all.log"
+[ -n "${FAKE_SETUPCON_FAIL:-}" ] && exit 1
+exit 0
 EOS
 # install: drop -o/-g (the tests do not run as root) and log the ownership asked.
 cat >"$WORK/bin/install" <<'EOS'
@@ -153,6 +163,7 @@ write_lst() {
 ! option
   grp             Switching to another layout
 EOF
+  cp -- "$KCS_ROOT/usr/share/X11/xkb/rules/evdev.lst" "$WORK/lst.fixture"
 }
 
 # put_installer_layout <layout> [variant]: the system as the Kali installer left it.
@@ -161,8 +172,11 @@ put_installer_layout() {
   mkdir -p "$KCS_ROOT/etc/default" "$(dirname "$XKB")"
   printf '# KEYBOARD CONFIGURATION FILE\n\n# Consult the keyboard(5) manual page.\n\nXKBMODEL="pc105"\nXKBLAYOUT="%s"\nXKBVARIANT="%s"\nXKBOPTIONS=""\n\nBACKSPACE="guess"\n' "$l" "$v" >"$KBD"
   printf 'XKBMODEL=pc105\nXKBLAYOUT=%s\nBACKSPACE=guess\nKEYMAP=la-latin1\n' "$l" >"$VC"
-  printf 'modelcode=pc105\nlayoutcode=%s\nvariantcode=%s\noptionscode=\nxkb-keymap=%s\nlayout=\nvariant=Spanish (Latin American)\ncompose=No compose key\n' \
-    "$l" "$v" "$l" >"$FAKE_STATE/kdc"
+  local ld vd lst="$KCS_ROOT/usr/share/X11/xkb/rules/evdev.lst"
+  ld="$(awk -v l="$l" '/^! /{ c = ($2 == "layout"); next } c && $1 == l { sub(/^[ \t]*[^ \t]+[ \t]+/, ""); print; exit }' "$lst")"
+  vd="$(awk -v l="$l:" -v v="$v" '/^! /{ c = ($2 == "variant"); next } c && $1 == v && $2 == l { sub(/^[ \t]*[^ \t]+[ \t]+[^ \t]+[ \t]+/, ""); print; exit }' "$lst")"
+  printf 'modelcode=pc105\nlayoutcode=%s\nvariantcode=%s\noptionscode=\nxkb-keymap=%s\nlayout=%s\nvariant=%s\ncompose=No compose key\n' \
+    "$l" "$v" "${l}${v:+($v)}" "$ld" "$ld${vd:+ - $vd}" >"$FAKE_STATE/kdc"
   printf '%s\npc105\n%s\n\n' "$l" "$v" >"$FAKE_STATE/x11"
   printf '(\n    rules: "",\n    model: "pc105",\n    layout: "%s",\n    variant: "%s",\n    options: None,\n    repeat_delay: 450,\n    repeat_rate: 30,\n)' \
     "$l" "$v" >"$XKB"
@@ -336,8 +350,8 @@ grep -qx 'XKBMODEL="pc105"' "$KBD" && grep -qx 'XKBLAYOUT="us"' "$KBD" && grep -
   compgen -G "$KBD.bak.*" >/dev/null && grep -q latam "$KBD".bak.*
 check "/etc/default/keyboard: chosen layout, model pc105, empty options, other lines kept, backup of the original" $?
 [[ "$(dc layoutcode)" == us && "$(dc variantcode)" == altgr-intl && "$(dc modelcode)" == pc105 && -z "$(dc optionscode)" &&
-  "$(dc xkb-keymap)" == 'us(altgr-intl)' && "$(dc layout)" == 'disp-layout:us' &&
-  "$(dc variant)" == 'disp-variant:us:altgr-intl' ]] && ! grep -q 'latam\|Latin' "$FAKE_STATE/kdc"
+  "$(dc xkb-keymap)" == 'us(altgr-intl)' && "$(dc layout)" == 'English (US)' &&
+  "$(dc variant)" == 'English (US) - English (intl., with AltGr dead keys)' ]] && ! grep -q 'latam\|Latin' "$FAKE_STATE/kdc"
 check "debconf: code and display answers hold the chosen layout, none the installer layout" $?
 grep -q 'debconf-set-selections DEBIAN_FRONTEND=noninteractive' "$FAKE_STATE/all.log" &&
   grep -q 'dpkg-reconfigure -f noninteractive keyboard-configuration DEBIAN_FRONTEND=noninteractive' "$FAKE_STATE/all.log"
@@ -366,7 +380,7 @@ check "keep after the choice: 0 changes" $?
 # --- a layout without a variant --------------------------------------------------------------------------------
 reset_state
 kb --keyboard es
-[[ "$rc" == 0 ]] && grep -qx 'XKBVARIANT=""' "$KBD" && [[ "$(dc xkb-keymap)" == es && "$(dc variant)" == disp-variant:es: && -z "$(dc variantcode)" ]] &&
+[[ "$rc" == 0 ]] && grep -qx 'XKBVARIANT=""' "$KBD" && [[ "$(dc xkb-keymap)" == es && "$(dc variant)" == Spanish && -z "$(dc variantcode)" ]] &&
   grep -q 'variant: ""' "$XKB"
 check "es without a variant: empty variant everywhere" $?
 kb --keyboard es
@@ -422,6 +436,97 @@ rm -f "$KBD"
 kb --keyboard us
 [[ "$rc" == 0 ]] && grep -qx 'XKBLAYOUT="us"' "$KBD" && grep -qx 'BACKSPACE="guess"' "$KBD"
 check "a missing /etc/default/keyboard is created complete" $?
+
+# --- M12b: a variant-only change keeps the same display text (the owner's real case) ---------------
+reset_state
+put_installer_layout us
+kb --keyboard us:altgr-intl
+[[ "$rc" == 0 && "$(dc layout)" == 'English (US)' && "$(dc variant)" == 'English (US) - English (intl., with AltGr dead keys)' ]] &&
+  grep -q 'is the only one configured' "$WORK/out" && ! grep -q 'still the installer' "$WORK/out"
+check "variant-only change us -> us:altgr-intl: the unchanged layout display text is not an installer trace" $?
+reset_state
+put_installer_layout us intl
+kb --keyboard us:altgr-intl
+[[ "$rc" == 0 ]] && grep -q 'is the only one configured' "$WORK/out"
+check "variant-only change us:intl -> us:altgr-intl succeeds" $?
+reset_state
+put_installer_layout us altgr-intl
+FAKE_DC_KEEP_VARIANT=1 kb --keyboard us:intl
+[[ "$rc" != 0 ]] && grep -q 'debconf keyboard-configuration/variant is still the installer' "$WORK/out"
+check "variant-only change: a variant display answer that stays the old one still fails" $?
+reset_state
+put_installer_layout us
+kb --keyboard us
+kb --keyboard us
+[[ "$rc" == 0 ]] && grep -q 'total changes: 0' "$WORK/out" && grep -q 'is the only one configured' "$WORK/out"
+check "plain us from the installer us, twice: the verification passes and the second run changes nothing" $?
+
+# --- M12b W2: xkb-data missing at the start of a real run ------------------------------------------------
+mv -- "$WORK/bin/apt-get" "$WORK/bin/apt-get.orig"
+cat >"$WORK/bin/apt-get" <<'EOS'
+#!/bin/sh
+case "$*" in
+  *install*xkb-data*)
+    mkdir -p "${KCS_ROOT:-}/usr/share/X11/xkb/rules"
+    cp -- "${KCS_LST_FIXTURE:?}" "${KCS_ROOT:-}/usr/share/X11/xkb/rules/evdev.lst"
+    echo "xkb-data-installed" >>"$FAKE_STATE/all.log"
+    ;;
+esac
+exec "$(dirname "$0")/apt-get.orig" "$@"
+EOS
+chmod +x "$WORK/bin/apt-get"
+export KCS_LST_FIXTURE="$WORK/lst.fixture"
+reset_state
+rm -f -- "$KCS_ROOT/usr/share/X11/xkb/rules/evdev.lst"
+printf 'keyboard-configuration\n' >"$FAKE_STATE/installed"
+kb --keyboard us:altgr-intl
+[[ "$rc" == 0 ]] && grep -q 'xkb-data-installed' "$FAKE_STATE/all.log" && grep -qx 'XKBVARIANT="altgr-intl"' "$KBD"
+check "real run with xkb-data missing: it is installed before validating, then the layout applies" $?
+reset_state
+rm -f -- "$KCS_ROOT/usr/share/X11/xkb/rules/evdev.lst"
+printf 'keyboard-configuration\n' >"$FAKE_STATE/installed"
+kb --keyboard xx
+[[ "$rc" == 2 ]] && grep -q "unknown keyboard layout 'xx'" "$WORK/out" && grep -qx 'XKBLAYOUT="latam"' "$KBD"
+check "real run with xkb-data missing and a bad layout: validated after the install, exit 2, nothing applied" $?
+
+# --- M12b W3: model and console cache are verified ------------------------------------------------------------------
+reset_state
+FAKE_INITRAMFS_CLOBBER_MODEL=1 kb --keyboard us:altgr-intl
+[[ "$rc" != 0 ]] && grep -q 'XKBMODEL' "$WORK/out" && grep -q 'wanted "pc105"' "$WORK/out"
+check "verify: an /etc/default/keyboard whose model is not pc105 fails loudly" $?
+reset_state
+mkdir -p "$KCS_ROOT/boot"
+touch -d '2001-01-01' "$KCS_ROOT/boot/initrd.img-$(uname -r)"
+FAKE_SETUPCON_FAIL=1 kb --keyboard us:altgr-intl
+[[ "$rc" != 0 ]] && grep -q 'setupcon' "$WORK/out" && [[ "$(calls update-initramfs)" == 0 ]]
+check "a failing setupcon fails the module loudly" $?
+kb --keyboard us:altgr-intl
+[[ "$rc" == 0 && "$(calls setupcon)" == 1 && "$(calls update-initramfs)" == 1 ]]
+check "after a failed setupcon the next run retries the console cache and the initramfs" $?
+
+# --- M12b S5: greeter files behind symlinks are never followed by root -----------------------------------------------------
+reset_state
+mkdir -p "$GH/.config/cosmic/com.system76.CosmicComp/v1" "$WORK/elsewhere"
+echo precious >"$WORK/elsewhere/target"
+ln -s "$WORK/elsewhere/target" "$GXKB"
+kb --keyboard us:altgr-intl
+[[ "$rc" == 0 && "$(<"$WORK/elsewhere/target")" == precious && -L "$GXKB" ]] && grep -q 'symlink' "$WORK/out" &&
+  ! compgen -G "$GH/.config/cosmic/com.system76.CosmicComp/v1/xkb_config.bak.*" >/dev/null
+check "a symlinked greeter xkb_config is skipped with a warning (target untouched)" $?
+reset_state
+mkdir -p "$GH/.config/cosmic" "$WORK/elsewhere/dir"
+ln -s "$WORK/elsewhere/dir" "$GH/.config/cosmic/com.system76.CosmicComp"
+kb --keyboard us:altgr-intl
+[[ "$rc" == 0 ]] && grep -q 'symlink' "$WORK/out" && [[ -z "$(ls -A "$WORK/elsewhere/dir")" ]]
+check "a symlinked parent directory of the greeter config is skipped with a warning" $?
+# --- M12b S6/S8: the user name and the menu header ---------------------------------------------------------------------------
+reset_state
+kb --keyboard us:altgr-intl
+! grep -q 'tester' "$WORK/out"
+check "messages name the real user (id -un), not \$USER" $?
+menu "6"
+! grep -q 'is replaced by' "$WORK/menu.out" && grep -q 'Keep current' "$WORK/menu.out" && head -n 3 "$WORK/menu.out" | grep -qi 'keep'
+check "menu header does not claim the installer layout is always replaced" $?
 
 if ((failures > 0)); then
   printf '\n--- last install.sh output ---\n'

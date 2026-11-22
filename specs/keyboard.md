@@ -122,6 +122,33 @@ Chosen layout L, variant V (possibly empty):
     changes (the second write of `/etc/default/keyboard`, which only exists to
     undo a `localectl` rewrite, and the verification are skipped). If the
     greeter's file cannot be read without sudo it counts as different.
+11. **Display answers are compared only when what they describe changed (M12b).**
+    The `layout` display answer ("English (US)") is compared with the pre-run one
+    only when the layout code changed; the `variant` display answer (it names the
+    layout too) only when the layout or the variant code changed. A variant-only
+    change within the same layout (`us` to `us:altgr-intl`, the usual case since the
+    Kali installer default is `us`) therefore no longer flags the unchanged layout
+    text as an installer trace.
+12. **xkb-data is installed before validating (M12b).** The rules list
+    (`evdev.lst`) is validated before the sudo password is asked, which would
+    reject `--keyboard` on a system without `xkb-data`. A real run now defers the
+    validation when the list is missing: after the one sudo prompt,
+    `kbd_ask_if_needed` installs `keyboard-configuration` and `xkb-data`, then
+    validates (exit 2 on a bad value, nothing applied). A dry-run cannot install,
+    so it still exits 2 with the message. This keeps "ask the sudo password once".
+13. **Model and console cache are verified (M12b).** The verification also needs
+    `XKBMODEL="pc105"` in `/etc/default/keyboard`. A failing `setupcon --save-only`
+    fails the module (error, before the initramfs), and the next run retries it
+    because `/etc/default/keyboard` is then newer than the initramfs.
+14. **Greeter files behind symlinks are skipped (M12b).** The greeter user owns its
+    home, so root never follows a link there: when the home, `.config`, `cosmic`,
+    `com.system76.CosmicComp`, `v1`, the `xkb_config` file or the backup target is a
+    symlink (or the backup name exists), the login screen step is skipped with a
+    warning and its verification is skipped too. Backups use
+    `cp --no-dereference -p`.
+15. **Messages use `id -un`, not `$USER` (M12b)**, and the menu header says the
+    picked layout replaces the installer one "or keep the current one", so it does
+    not contradict "Keep current".
 
 ## Hardware detection
 
@@ -173,3 +200,10 @@ tests/test-keyboard.sh
   the `;` key typed `;` in kitty (`odd/evidence/keyboard-live-altgr-us.png`).
   Not repeated after the reboot: starting a session needs a temporary greetd
   `initial_session`, which the automation guard refused to allow.
+
+### M12b VM evidence
+
+- VM on `us:altgr-intl`; `--keyboard us` rc=0 (6 changes, verification passed), then
+  `--keyboard us:altgr-intl` (the variant-only change that failed before): rc=0, 6
+  changes, `is the only one configured`; repeat `total changes: 0`; `--keyboard keep`
+  `total changes: 0`; `systemctl --failed` empty; `localectl` us / pc105 / altgr-intl.

@@ -364,7 +364,9 @@ if ((${#SELECTED[@]} > 0)); then
   # can read the keyboard (only when the keyboard module is selected and no
   # --keyboard was given; see specs/keyboard.md).
   if [[ -n "${SELECTED[keyboard]:-}" ]]; then
-    kbd_ask_if_needed || exit 1
+    rc=0
+    kbd_ask_if_needed || rc=$?
+    ((rc == 0)) || exit "$rc"
   fi
   # From here nothing may read the keyboard: any stray prompt sees EOF.
   exec </dev/null

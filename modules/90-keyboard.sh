@@ -18,6 +18,7 @@ _KBD_MODEL="pc105"
 _KBD_DEFAULT_REPEAT_DELAY=600
 _KBD_DEFAULT_REPEAT_RATE=25
 _KBD_DEBCONF_PKG="keyboard-configuration"
+_KBD_GREETER_SKIPPED=0
 
 # --- reading the current state ---------------------------------------------------------
 
@@ -169,7 +170,7 @@ _kbd_greeter_home() {
 # user, which reads xkb_config from that user's home. Written as root with the
 # greeter's ownership; the other files of that home are never touched.
 _kbd_apply_xkb_greeter() {
-  local layout="$1" variant="$2" user home group base dest tmp cur="" delay rate d
+  local layout="$1" variant="$2" user home group base dest tmp cur="" delay rate d bak
   user="$(_kbd_greeter_user)"
   home="$(_kbd_greeter_home)"
   if [[ -z "$home" ]]; then
@@ -179,6 +180,15 @@ _kbd_apply_xkb_greeter() {
   group="$(id -gn "$user" 2>/dev/null || printf '%s' "$user")"
   base="$home/.config/cosmic/com.system76.CosmicComp/v1"
   dest="$base/xkb_config"
+  # The greeter user owns this tree: root must never follow a symlink in it.
+  _KBD_GREETER_SKIPPED=0
+  for d in "$home" "$home/.config" "$home/.config/cosmic" "${base%/v1}" "$base" "$dest"; do
+    if sudo_read test -L "$d"; then
+      log_warn "the login screen keyboard is not configured: $d is a symlink (root does not follow links in the $user home)"
+      _KBD_GREETER_SKIPPED=1
+      return 0
+    fi
+  done
   cur="$(sudo_read cat -- "$dest" || true)"
   delay="$(_kbd_num "$(_kbd_ron_field "$cur" repeat_delay)" "$_KBD_DEFAULT_REPEAT_DELAY")"
   rate="$(_kbd_num "$(_kbd_ron_field "$cur" repeat_rate)" "$_KBD_DEFAULT_REPEAT_RATE")"
@@ -197,7 +207,13 @@ _kbd_apply_xkb_greeter() {
     fi
   done
   if [[ -n "$cur" ]]; then
-    run_sudo cp -p -- "$dest" "$dest.bak.$(date +%Y%m%d-%H%M%S)"
+    bak="$dest.bak.$(date +%Y%m%d-%H%M%S)"
+    if sudo_read test -e "$bak" || sudo_read test -L "$bak"; then
+      log_warn "the login screen keyboard is not configured: the backup target $bak already exists"
+      _KBD_GREETER_SKIPPED=1
+      return 0
+    fi
+    run_sudo cp --no-dereference -p -- "$dest" "$bak"
   fi
   run_sudo install -m 0644 -o "$user" -g "$group" -- "$tmp" "$dest"
   rm -f -- "$tmp"
@@ -223,13 +239,16 @@ _kbd_apply_localectl() {
 # chosen layout, so the installer layout is nowhere. Prints every trace and
 # returns 1 otherwise.
 _kbd_verify() {
-  local layout="$1" variant="$2" old_keymap="$3" f dump x text gh
+  local layout="$1" variant="$2" old_keymap="$3" old_dump="$4" f dump x text gh me
   local -a bad=()
+  me="$(id -un)"
   f="$(rootpath /etc/default/keyboard)"
   [[ "$(sed -n 's/^XKBLAYOUT="\(.*\)"$/\1/p' "$f" 2>/dev/null)" == "$layout" ]] ||
     bad+=("/etc/default/keyboard has XKBLAYOUT=\"$(sed -n 's/^XKBLAYOUT=//p' "$f" 2>/dev/null)\" (wanted $layout)")
   [[ "$(sed -n 's/^XKBVARIANT="\(.*\)"$/\1/p' "$f" 2>/dev/null)" == "$variant" ]] ||
     bad+=("/etc/default/keyboard has XKBVARIANT=$(sed -n 's/^XKBVARIANT=//p' "$f" 2>/dev/null) (wanted \"$variant\")")
+  [[ "$(sed -n 's/^XKBMODEL="\(.*\)"$/\1/p' "$f" 2>/dev/null)" == "$_KBD_MODEL" ]] ||
+    bad+=("/etc/default/keyboard has XKBMODEL=$(sed -n 's/^XKBMODEL=//p' "$f" 2>/dev/null) (wanted \"$_KBD_MODEL\")")
   [[ "$(sed -n 's/^XKBOPTIONS="\(.*\)"$/\1/p' "$f" 2>/dev/null)" == "" ]] ||
     bad+=("/etc/default/keyboard has XKBOPTIONS set (wanted empty)")
 
@@ -243,14 +262,21 @@ _kbd_verify() {
       bad+=("debconf $_KBD_DEBCONF_PKG/${p%%=*} is \"$(_kbd_dc "$dump" "${p%%=*}")\" (wanted \"${p#*=}\")")
   done
   # The display answers must not be the installer's any more (they are worded by
-  # the package, so they are compared with the old ones, not with a wanted text).
-  if [[ "$(_kbd_dc "$old_dump" layoutcode)" != "$layout" || "$(_kbd_dc "$old_dump" variantcode)" != "$variant" ]]; then
-    for q in layout variant; do
-      x="$(_kbd_dc "$old_dump" "$q")"
-      [[ -z "$x" || "$(_kbd_dc "$dump" "$q")" != "$x" ]] ||
-        bad+=("debconf $_KBD_DEBCONF_PKG/$q is still the installer's \"$x\"")
-    done
-  fi
+  # the package, so they are compared with the old ones, not with a wanted text),
+  # but each one only when what it describes changed: the layout display when the
+  # layout changed; the variant display (it names the layout too) when the layout
+  # or the variant changed. An unchanged layout keeps its text legitimately.
+  local old_l old_v
+  old_l="$(_kbd_dc "$old_dump" layoutcode)"
+  old_v="$(_kbd_dc "$old_dump" variantcode)"
+  local -a changed=()
+  [[ "$old_l" == "$layout" ]] || changed+=(layout)
+  [[ "$old_l" == "$layout" && "$old_v" == "$variant" ]] || changed+=(variant)
+  for q in "${changed[@]}"; do
+    x="$(_kbd_dc "$old_dump" "$q")"
+    [[ -z "$x" || "$(_kbd_dc "$dump" "$q")" != "$x" ]] ||
+      bad+=("debconf $_KBD_DEBCONF_PKG/$q is still the installer's \"$x\"")
+  done
   [[ -n "$(_kbd_dc "$dump" variant)" ]] || bad+=("debconf $_KBD_DEBCONF_PKG/variant is empty")
 
   [[ "$(_kbd_localectl_field "X11 Layout")" == "$layout" ]] ||
@@ -274,12 +300,14 @@ _kbd_verify() {
   if [[ -r "$cur" ]]; then
     text="$(<"$cur")"
     [[ "$(_kbd_ron_field "$text" layout)" == "$layout" && "$(_kbd_ron_field "$text" variant)" == "$variant" ]] ||
-      bad+=("COSMIC xkb_config of $USER has layout \"$(_kbd_ron_field "$text" layout)\" variant \"$(_kbd_ron_field "$text" variant)\"")
+      bad+=("COSMIC xkb_config of $me has layout \"$(_kbd_ron_field "$text" layout)\" variant \"$(_kbd_ron_field "$text" variant)\"")
   else
-    bad+=("COSMIC xkb_config of $USER is missing: $cur")
+    bad+=("COSMIC xkb_config of $me is missing: $cur")
   fi
   gh="$(_kbd_greeter_home)"
-  if [[ -n "$gh" ]]; then
+  if ((_KBD_GREETER_SKIPPED)); then
+    log_warn "the login screen keyboard was skipped (symlink), so it is not verified"
+  elif [[ -n "$gh" ]]; then
     text="$(sudo_read cat -- "$gh/.config/cosmic/com.system76.CosmicComp/v1/xkb_config" || true)"
     if [[ -z "$text" ]]; then
       bad+=("COSMIC xkb_config of the login screen user is missing or unreadable")
@@ -294,7 +322,7 @@ _kbd_verify() {
     done
     return 1
   fi
-  log_ok "keyboard layout ${layout}${variant:+:$variant} is the only one configured (/etc/default/keyboard, debconf, localectl, console, COSMIC for $USER and the login screen)"
+  log_ok "keyboard layout ${layout}${variant:+:$variant} is the only one configured (/etc/default/keyboard, debconf, localectl, console, COSMIC for $me and the login screen)"
 }
 
 # _kbd_write_default_file <file> <layout> <variant>: /etc/default/keyboard with the
@@ -343,7 +371,7 @@ module_apply() {
 
   log_info "keyboard: layout $layout${variant:+, variant $variant} (model $_KBD_MODEL, no options)"
   if [[ "$DRY_RUN" == "1" ]]; then
-    log_info "keyboard: would set /etc/default/keyboard, the debconf answers of $_KBD_DEBCONF_PKG, the initramfs and console cache (only when something changed), the X11 keymap (localectl), and the COSMIC xkb_config of $USER and of the login screen user"
+    log_info "keyboard: would set /etc/default/keyboard, the debconf answers of $_KBD_DEBCONF_PKG, the initramfs and console cache (only when something changed), the X11 keymap (localectl), and the COSMIC xkb_config of $(id -un) and of the login screen user"
   fi
 
   ensure_packages "$_KBD_DEBCONF_PKG" xkb-data || return 1
@@ -365,7 +393,13 @@ module_apply() {
   if ((CHANGES > before)) || { [[ "$DRY_RUN" != "1" && -e "$initrd" && "$kf" -nt "$initrd" ]]; }; then
     if command -v setupcon >/dev/null 2>&1; then
       log_change "refresh the console keymap cache (setupcon)"
-      run_sudo_may_fail setupcon --save-only || log_warn "setupcon --save-only failed; the console keymap cache may be stale"
+      # Not "may fail": a stale console cache is a trace of the old layout. Stopping
+      # here (before the initramfs) leaves /etc/default/keyboard newer than the
+      # initramfs, so the next run retries both.
+      if ! run_sudo_may_fail setupcon --save-only; then
+        log_error "setupcon --save-only failed: the console keymap cache still holds the old layout (run again to retry)"
+        return 1
+      fi
     fi
     log_change "update the initramfs so the console and any disk unlock prompt use the layout"
     run_sudo update-initramfs -u
