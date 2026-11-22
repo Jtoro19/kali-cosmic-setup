@@ -116,6 +116,9 @@ EOS
   cat >"$bin/systemctl" <<'EOS'
 #!/bin/sh
 echo "$*" >>"$FAKE_STATE/systemctl.log"
+# FAKE_FAIL="|systemctl enable cosmic-greeter.service|systemd-sysusers ..." makes
+# exactly those commands fail (full command line, pipe separated).
+case "|${FAKE_FAIL:-}|" in *"|systemctl $*|"*) exit 1 ;; esac
 sysd="${KCS_ROOT:-}/etc/systemd/system"
 dm="$sysd/display-manager.service"
 cmd="$1"
@@ -137,7 +140,8 @@ case "$cmd" in
       case "$u" in
         cosmic-greeter.service | greetd.service | gdm3.service | lightdm.service | sddm.service)
           mkdir -p "$sysd"
-          ln -sfn "$u" "$dm"
+          # FAKE_NO_ALIAS: the alias link is not created (another display manager holds it).
+          [ -n "${FAKE_NO_ALIAS:-}" ] || ln -sfn "$u" "$dm"
           ;;
       esac
     done
@@ -164,11 +168,13 @@ EOS
   # cosmic-greeter user in the fake user list.
   cat >"$bin/systemd-sysusers" <<'EOS'
 #!/bin/sh
+case "|${FAKE_FAIL:-}|" in *"|systemd-sysusers $*|"*) exit 1 ;; esac
 echo "$*" >>"$FAKE_STATE/sysusers.log"
 echo cosmic-greeter >>"$FAKE_STATE/users"
 EOS
   cat >"$bin/systemd-tmpfiles" <<'EOS'
 #!/bin/sh
+case "|${FAKE_FAIL:-}|" in *"|systemd-tmpfiles $*|"*) exit 1 ;; esac
 echo "$*" >>"$FAKE_STATE/tmpfiles.log"
 mkdir -p "${KCS_ROOT:-}/var/lib/cosmic-greeter"
 EOS

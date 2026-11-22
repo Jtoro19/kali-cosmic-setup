@@ -45,7 +45,7 @@ _DESKTOP_BASE=(
 
 # Display managers to turn off so cosmic-greeter owns display-manager.service.
 # greetd.service is Debian's own unit, which may be enabled by its package.
-_DESKTOP_OTHER_DM=(gdm3 lightdm sddm lxdm ly greetd)
+_DESKTOP_OTHER_DM=(gdm3 lightdm sddm lxdm ly xdm slim nodm greetd)
 
 # apt preferences: the specific record comes first (apt uses the first match),
 # so only the two COSMIC meta packages can come from the repo; every other
@@ -72,7 +72,7 @@ _desktop_repo() {
   apt_ensure_sources "$_DESKTOP_REPO_NAME" "$_DESKTOP_REPO_URI" unstable main "$_DESKTOP_KEY_DEST" || return 1
   apt_ensure_pin "$_DESKTOP_REPO_NAME" "$(_desktop_pin_content)" || return 1
   if ((CHANGES > before)); then
-    apt_update_once --force
+    apt_update_once --force || return 1
   fi
 }
 
@@ -91,7 +91,7 @@ _desktop_files() {
   install_file "$src/cosmic-greeter.pam" \
     "$(rootpath /etc/pam.d/cosmic-greeter)" 0644 || return 1
   if ((units_changed)); then
-    run_sudo systemctl daemon-reload
+    run_sudo systemctl daemon-reload || return 1
   fi
 }
 
@@ -101,17 +101,20 @@ _desktop_greeter_user() {
   local created=0
   if ! getent passwd cosmic-greeter >/dev/null 2>&1; then
     log_change "create system user cosmic-greeter (systemd-sysusers)"
-    run_sudo systemd-sysusers cosmic-greeter.conf
+    run_sudo systemd-sysusers cosmic-greeter.conf || return 1
     created=1
   fi
   if ((created)) || [[ ! -d "$(rootpath /var/lib/cosmic-greeter)" ]]; then
     log_change "create cosmic-greeter directories (systemd-tmpfiles)"
-    run_sudo systemd-tmpfiles --create cosmic-greeter.conf
+    run_sudo systemd-tmpfiles --create cosmic-greeter.conf || return 1
   fi
 }
 
 # _desktop_display_manager: cosmic-greeter owns display-manager.service. Other
-# display managers are disabled first. getty units are never touched.
+# display managers are disabled first. The module never disables or masks any
+# getty unit. The shipped cosmic-greeter.service itself conflicts with
+# getty@tty1 (upstream design: the greeter takes VT1); the other VTs keep their
+# gettys, which is the recovery path.
 _desktop_display_manager() {
   local dm_link s
   dm_link="$(rootpath /etc/systemd/system/display-manager.service)"
@@ -119,16 +122,21 @@ _desktop_display_manager() {
     for s in "${_DESKTOP_OTHER_DM[@]}"; do
       if systemctl is-enabled --quiet "$s.service" >/dev/null 2>&1; then
         log_change "disable $s.service"
-        run_sudo systemctl disable "$s.service"
+        run_sudo systemctl disable "$s.service" || return 1
       fi
     done
     log_change "enable display manager: cosmic-greeter"
-    run_sudo systemctl enable cosmic-greeter.service
+    run_sudo systemctl enable cosmic-greeter.service || return 1
+    # A display manager missing from the list above could still hold the alias.
+    if [[ "$DRY_RUN" != "1" && "$(readlink -f -- "$dm_link" 2>/dev/null)" != */cosmic-greeter.service ]]; then
+      log_error "display-manager.service does not resolve to cosmic-greeter.service after enabling it; another display manager still holds the alias. Disable it and run the installer again"
+      return 1
+    fi
     log_warn "reboot to reach the COSMIC login"
   fi
   if ! systemctl is-enabled --quiet cosmic-greeter-daemon.service >/dev/null 2>&1; then
     log_change "enable cosmic-greeter-daemon.service"
-    run_sudo systemctl enable cosmic-greeter-daemon.service
+    run_sudo systemctl enable cosmic-greeter-daemon.service || return 1
   fi
 }
 
@@ -158,6 +166,6 @@ module_apply() {
   # Graphical target as the default boot target.
   if [[ "$(systemctl get-default 2>/dev/null)" != "graphical.target" ]]; then
     log_change "set default boot target: graphical.target"
-    run_sudo systemctl set-default graphical.target
+    run_sudo systemctl set-default graphical.target || return 1
   fi
 }

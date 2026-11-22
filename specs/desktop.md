@@ -67,9 +67,11 @@ The four files shipped under `files/desktop/` are copied from upstream
    daemon-reload` runs only when a unit file changed.
 10. Display manager: disables `greetd.service` (Debian's own unit, which may
     have been enabled by the package install), `gdm3`, `lightdm`, `sddm`,
-    `lxdm` and `ly` if enabled, then enables `cosmic-greeter.service` and
+    `lxdm`, `ly`, `xdm`, `slim` and `nodm` if enabled, then enables `cosmic-greeter.service` and
     `cosmic-greeter-daemon.service`. `getty@` units are never disabled or
     masked.
+    After enabling, it checks that `display-manager.service` resolves to
+    `cosmic-greeter.service` and fails with a clear message if not.
 11. Sets `graphical.target` as the default boot target when it is not.
 
 The extra packages beyond the plan's list (`pipewire-alsa`,
@@ -113,7 +115,10 @@ resolving to `cosmic-greeter.service`. All read-only. A second run reports
 
 ## Recovery (TTY)
 
-If the graphical login fails, text consoles still work (getty is untouched):
+If the graphical login fails, text consoles still work. The module never
+disables or masks getty units; the shipped `cosmic-greeter.service` conflicts
+with `getty@tty1` by upstream design (the greeter takes VT1), and the other
+VTs keep their gettys for recovery:
 
 1. Press Ctrl+Alt+F2 and log in.
 2. `sudo systemctl disable cosmic-greeter.service`

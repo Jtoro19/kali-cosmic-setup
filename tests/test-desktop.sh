@@ -210,6 +210,40 @@ desk
 [[ "$rc" == 0 && ! -e "$FAKE_STATE/sysusers.log" && ! -e "$FAKE_STATE/tmpfiles.log" ]]
 check "an existing cosmic-greeter user means no sysusers and no tmpfiles" $?
 
+# --- privileged step failures fail the module ---------------------------------
+for cmd in 'systemd-sysusers cosmic-greeter.conf' 'systemd-tmpfiles --create cosmic-greeter.conf' \
+  'systemctl daemon-reload' 'systemctl enable cosmic-greeter.service' \
+  'systemctl enable cosmic-greeter-daemon.service' 'systemctl set-default graphical.target'; do
+  reset_state
+  FAKE_FAIL="|$cmd|" desk
+  [[ "$rc" != 0 ]] && grep -q "module 'desktop' failed" "$WORK/out"
+  check "a failing '$cmd' fails the module" $?
+done
+reset_state
+printf '%s\n' gdm3.service >"$FAKE_STATE/enabled"
+mkdir -p "$SYSD" && ln -sfn gdm3.service "$SYSD/display-manager.service"
+FAKE_FAIL="|systemctl disable gdm3.service|" desk
+[[ "$rc" != 0 ]] && ! grep -q '^enable cosmic-greeter.service' "$FAKE_STATE/systemctl.log"
+check "a failing 'systemctl disable' fails the module before enabling the greeter" $?
+
+# --- display-manager link is verified ---------------------------------------
+reset_state
+mkdir -p "$SYSD" && ln -sfn other-dm.service "$SYSD/display-manager.service"
+FAKE_NO_ALIAS=1 desk
+[[ "$rc" != 0 ]] && grep -q 'display-manager.service does not resolve to cosmic-greeter.service' "$WORK/out"
+check "an alias still held by another unit fails with a clear message" $?
+reset_state
+desk --dry-run
+[[ "$rc" == 0 ]] && ! grep -q 'does not resolve' "$WORK/out"
+check "dry-run does not verify the link" $?
+reset_state
+printf '%s\n' xdm.service slim.service nodm.service >"$FAKE_STATE/enabled"
+desk
+for dm in xdm slim nodm; do
+  grep -qx "disable $dm.service" "$FAKE_STATE/systemctl.log"
+  check "enabled display manager $dm is disabled" $?
+done
+
 # --- key fingerprint mismatch aborts ---------------------------------------
 reset_state
 fake_key_file "$FAKE_KEY_FILE" "0000000000000000000000000000000000000000"
