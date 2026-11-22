@@ -24,7 +24,10 @@ the module (`_LOCALE_GEN`).
 - `/etc/default/locale`: written with `update-locale`, which keeps every
   variable the module does not own (for example `LANGUAGE`). Backup
   `/etc/default/locale.bak.<timestamp>` when a value changes.
-- Optional `LOCALE_TZ=<Area/City>`: sets the time zone with `timedatectl`;
+- A `LC_ALL` line in `/etc/default/locale` overrides everything this module
+  sets; the module warns about it and does not remove it.
+- Optional `LOCALE_TZ=<Area/City>` (must be a file under
+  `/usr/share/zoneinfo`, a directory is rejected): sets the time zone with `timedatectl`;
   without it the time zone is left alone.
 - No services. No keyboard files. No `/etc/locale.conf` (that is the Arch
   location; Debian reads `/etc/default/locale`, and `localectl` shows it).

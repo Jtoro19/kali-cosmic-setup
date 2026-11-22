@@ -278,7 +278,7 @@ _desktop_purge_gdm() {
     _desktop_verify_dm || return 1
   fi
 
-  if ! out="$(apt-get -s purge "${present[@]}" 2>&1)"; then
+  if ! out="$(LC_ALL=C apt-get -s purge "${present[@]}" 2>&1)"; then
     log_error "cannot simulate the purge of ${present[*]}: $out"
     return 1
   fi
@@ -304,7 +304,7 @@ _desktop_purge_gdm() {
     _desktop_verify_dm || return 1
   fi
 
-  if out="$(apt-get -s autoremove 2>&1)"; then
+  if out="$(LC_ALL=C apt-get -s autoremove 2>&1)"; then
     mapfile -t orphans < <(printf '%s\n' "$out" | awk '/^Remv / { print $2 }')
   else
     log_warn "could not simulate autoremove: $out"

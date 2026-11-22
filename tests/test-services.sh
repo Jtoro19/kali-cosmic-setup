@@ -69,9 +69,13 @@ svc
 [[ "$rc" == 0 ]] && enabled_all
 check "fresh run: the five units are enabled" $?
 for u in "${BASE_UNITS[@]}"; do
+  [[ "$u" == NetworkManager.service ]] && continue
   grep -qx "enable --now -- $u" "$SYSLOG"
   check "fresh run: $u is enabled and started (enable --now)" $?
 done
+grep -qx 'enable -- NetworkManager.service' "$SYSLOG" && ! grep -qx 'enable --now -- NetworkManager.service' "$SYSLOG" &&
+  ! grep -Eq '^(start|restart).*NetworkManager' "$SYSLOG"
+check "fresh run: NetworkManager is enabled for the next boot, never started now" $?
 ! grep -Eq "$FORBIDDEN" "$FAKE_STATE/enabled" && ! grep -E '^(enable|disable|start|stop|restart|mask|unmask)' "$SYSLOG" | grep -Eq "$FORBIDDEN"
 check "no sshd, avahi, cups, firewalld, docker, mariadb or ollama unit is touched" $?
 ! grep -Eq '^(disable|stop|restart|mask|reload)' "$SYSLOG"
@@ -121,13 +125,41 @@ check "an interface in interfaces.d is detected too" $?
 reset_state
 printf '%s\n' '# iface eth0 inet dhcp' 'auto lo' 'iface lo inet loopback' >"$KCS_ROOT/etc/network/interfaces"
 svc
-grep -qx 'enable --now -- NetworkManager.service' "$SYSLOG"
-check "a commented iface and the loopback do not count as ifupdown-managed" $?
+grep -qx 'enable -- NetworkManager.service' "$SYSLOG" && ! grep -q '\[warn\]' "$WORK/out"
+check "a commented iface and the loopback do not count as ifupdown-managed (no warning)" $?
 reset_state
 rm -rf -- "$KCS_ROOT/etc/network"
 svc
-grep -qx 'enable --now -- NetworkManager.service' "$SYSLOG"
-check "no /etc/network/interfaces at all: plain enable --now" $?
+grep -qx 'enable -- NetworkManager.service' "$SYSLOG"
+check "no /etc/network/interfaces at all: plain enable, not started" $?
+reset_state
+echo NetworkManager.service >"$FAKE_STATE/active"
+svc
+[[ "$rc" == 0 ]] && grep -qx 'enable -- NetworkManager.service' "$SYSLOG" && ! grep -Eq '^(stop|restart)' "$SYSLOG"
+check "NetworkManager already active but not enabled: enabled, never restarted" $?
+
+# --- masked units (the admin's decision, never unmasked) -----------------------
+reset_state
+echo bluetooth.service >"$FAKE_STATE/masked"
+svc
+[[ "$rc" == 0 ]] &&
+  ! grep -qx 'bluetooth.service' "$FAKE_STATE/enabled" && grep -qx 'fstrim.timer' "$FAKE_STATE/enabled" &&
+  ! grep -Eq '^(enable|unmask|mask).*bluetooth' "$SYSLOG" && grep -q '\[info\].*bluetooth.*masked' "$WORK/out"
+check "a masked unit is skipped with an info line; the run succeeds and the rest is enabled" $?
+svc
+grep -q 'total changes: 0' "$WORK/out"
+check "masked unit: second run changes nothing" $?
+reset_state
+echo NetworkManager.service >"$FAKE_STATE/masked"
+svc
+[[ "$rc" == 0 ]] && ! grep -Eq '^(enable|unmask).*NetworkManager' "$SYSLOG" && grep -q '\[info\].*NetworkManager.*masked' "$WORK/out"
+check "a masked NetworkManager is skipped with an info line" $?
+reset_state
+echo NetworkManager.service >"$FAKE_STATE/masked"
+printf '%s\n' 'iface eth0 inet dhcp' >"$KCS_ROOT/etc/network/interfaces"
+svc
+[[ "$rc" == 0 ]] && ! grep -Eq '^(enable|unmask).*NetworkManager' "$SYSLOG"
+check "a masked NetworkManager with ifupdown config is skipped too" $?
 reset_state
 echo systemd-networkd.service >"$FAKE_STATE/active"
 svc

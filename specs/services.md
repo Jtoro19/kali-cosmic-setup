@@ -20,8 +20,9 @@ opt-in `packages-dev` module, with localhost-only binding).
 - No files, no packages (the desktop module installs `network-manager`,
   `bluez` and `power-profiles-daemon`; `systemd-timesyncd` and `util-linux`
   ship with Kali).
-- Units enabled, each only when its unit file exists and it is not enabled
-  yet, with `systemctl enable --now`:
+- Units enabled, each only when its unit file exists, it is not enabled yet
+  and it is not masked, with `systemctl enable --now` (NetworkManager is the
+  exception: plain `systemctl enable`, see Decisions):
   `NetworkManager.service`, `bluetooth.service`,
   `power-profiles-daemon.service`, `systemd-timesyncd.service`,
   `fstrim.timer`. None of them opens a network port (the Bluetooth unit has
@@ -45,20 +46,23 @@ Bluetooth adapter exists.
   1. The module never edits `/etc/network/interfaces` or
      `NetworkManager.conf`, never stops or restarts any network unit and never
      disables ifupdown's `networking.service`.
-  2. When ifupdown configures an interface (any `iface <name>` other than
-     `lo` in `/etc/network/interfaces` or `interfaces.d/*`), NetworkManager
-     is enabled for the next boot only (`systemctl enable`, no `--now`), and
-     a warning names the interface: NetworkManager leaves it to ifupdown, so
-     the network stays exactly as it is. The user can later move that
-     interface to NetworkManager by hand.
-  3. When only `lo` is configured (the desktop default), the plain
-     `enable --now` is used: starting NetworkManager cannot touch a running
-     connection, because it is either already active or nothing else
-     manages the interface.
+  2. NetworkManager is enabled with plain `systemctl enable`, never
+     `--now`, whether or not it is already active: it starts at the next boot.
+     Starting it on a running machine could re-plumb a connection, and the
+     machine may be reached over SSH ("never cut the network of the running
+     system"). The cost is that NetworkManager is not running until a reboot.
+  3. When ifupdown configures an interface (any `iface <name>` other than
+     `lo` in `/etc/network/interfaces` or `interfaces.d/*`), a warning names the
+     interface: NetworkManager leaves it to ifupdown, so the network stays
+     exactly as it is. The user can later move that interface to NetworkManager
+     by hand.
   4. When `systemd-networkd` is enabled or active, NetworkManager is not
      enabled at all (a warning): two network managers on one interface would
      fight, and the existing one keeps the network.
   5. When NetworkManager is already enabled, the module does nothing.
+- **Masked units.** A unit the admin masked (`systemctl is-enabled` prints
+  `masked`) is skipped with an info line: the module never unmasks or
+  overrides, and `systemctl enable` would fail on it and end the whole run.
 - **One time daemon.** If `chrony`, `ntpsec`, `ntp` or `openntpd` is
   installed, `systemd-timesyncd` is not enabled (info line). Only one time
   daemon may run.

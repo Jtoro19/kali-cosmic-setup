@@ -209,6 +209,8 @@ shift
 case "$cmd" in
   is-enabled)
     for a in "$@"; do unit="$a"; done
+    # A unit listed in $FAKE_STATE/masked prints "masked" and is not enabled.
+    if grep -qx -- "$unit" "$FAKE_STATE/masked" 2>/dev/null; then echo masked; exit 1; fi
     grep -qx -- "$unit" "$FAKE_STATE/enabled" 2>/dev/null
     ;;
   is-active)
@@ -230,6 +232,8 @@ case "$cmd" in
   enable)
     for u in "$@"; do
       case "$u" in -*) continue ;; esac
+      # Like systemd: enabling a masked unit fails.
+      if grep -qx -- "$u" "$FAKE_STATE/masked" 2>/dev/null; then exit 1; fi
       echo "$u" >>"$FAKE_STATE/enabled"
       case "$u" in
         cosmic-greeter.service | greetd.service | gdm3.service | lightdm.service | sddm.service)

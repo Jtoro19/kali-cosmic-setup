@@ -63,8 +63,26 @@ check "gpu: the virtio GPU of a VM gives an empty list" $?
 00:14.0 Ethernet controller [0200]: AMD [1002:1234]')" == "" ]]
 check "gpu: non-display devices are ignored" $?
 mkdir -p "$WORK/empty"
-[[ "$(PATH="$WORK/empty" detect_gpu_vendors)" == "" ]]
-check "gpu: without lspci the list is empty" $?
+[[ "$(KCS_ROOT="$WORK/root" PATH="$WORK/empty" detect_gpu_vendors 2>/dev/null)" == "" ]]
+check "gpu: without lspci and without sysfs the list is empty" $?
+KCS_ROOT="$WORK/root" PATH="$WORK/empty" detect_gpu_vendors 2>&1 >/dev/null | grep -q 'lspci'
+check "gpu: without lspci and without sysfs it warns" $?
+drm() { # drm <vendor id...>: fake /sys/class/drm cards without lspci
+  local i=0 v
+  rm -rf -- "$WORK/root/sys"
+  for v in "$@"; do
+    mkdir -p "$WORK/root/sys/class/drm/card$i/device" "$WORK/root/sys/class/drm/card$i-DP-1"
+    echo "$v" >"$WORK/root/sys/class/drm/card$i/device/vendor"
+    i=$((i + 1))
+  done
+  KCS_ROOT="$WORK/root" PATH="$WORK/empty" detect_gpu_vendors
+}
+[[ "$(drm 0x1002)" == amd ]]
+check "gpu: without lspci, sysfs vendor 0x1002 is amd" $?
+[[ "$(drm 0x10de 0x8086 0x1002)" == "amd intel nvidia" ]]
+check "gpu: without lspci, sysfs vendors come out sorted amd intel nvidia" $?
+[[ "$(drm 0x1af4 2>&1)" == "" ]]
+check "gpu: without lspci, a virtio card in sysfs gives an empty list and no warning" $?
 
 if ((failures > 0)); then
   printf '%d check(s) failed\n' "$failures"

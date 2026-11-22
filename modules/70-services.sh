@@ -42,10 +42,11 @@ _services_ifupdown_ifaces() {
 }
 
 # _services_networkmanager: NetworkManager must never cut the network of the
-# running system. It is never stopped or restarted. When ifupdown configures an
-# interface, NetworkManager is only enabled for the next boot (not started now),
-# and warns that it leaves that interface to ifupdown. When systemd-networkd is
-# in use, two network managers would fight, so NetworkManager is left alone.
+# running system. It is never stopped, restarted or started now: it is only
+# enabled (`systemctl enable`, no --now) and starts at the next boot. When
+# ifupdown configures an interface, a warning says NetworkManager leaves it to
+# ifupdown. When systemd-networkd is in use, two network managers would fight,
+# so NetworkManager is left alone. A masked unit is the admin's decision.
 _services_networkmanager() {
   local unit=NetworkManager.service ifaces
   system_unit_exists "$unit" || return 0
@@ -55,18 +56,21 @@ _services_networkmanager() {
     log_warn "systemd-networkd is in use; not enabling NetworkManager (two network managers would fight over the interfaces)"
     return 0
   fi
+  if systemctl is-enabled --quiet "$unit" >/dev/null 2>&1; then
+    return 0
+  fi
+  if system_unit_masked "$unit"; then
+    log_info "$unit is masked: leaving it alone"
+    return 0
+  fi
 
   ifaces="$(_services_ifupdown_ifaces | tr '\n' ' ')"
   ifaces="${ifaces% }"
   if [[ -n "$ifaces" ]]; then
     log_warn "ifupdown configures ${ifaces} in /etc/network/interfaces: NetworkManager leaves it unmanaged and your network stays as it is"
-    if ! systemctl is-enabled --quiet "$unit" >/dev/null 2>&1; then
-      log_change "enable $unit (for the next boot, not started now)"
-      run_sudo systemctl enable -- "$unit" || return 1
-    fi
-    return 0
   fi
-  ensure_system_unit_enabled "$unit"
+  log_change "enable $unit (for the next boot, not started now)"
+  run_sudo systemctl enable -- "$unit"
 }
 
 module_apply() {

@@ -36,15 +36,6 @@ _drivers_gpu_vendors() {
   fi
 }
 
-# _drivers_has_candidate <pkg>: true when apt knows a version to install. The
-# output is captured first: a `grep -q` in a pipe would end apt-cache early and
-# pipefail would report that as a failure.
-_drivers_has_candidate() {
-  local out
-  out="$(apt-cache policy "$1" 2>/dev/null)" || return 1
-  [[ "$out" =~ Candidate:\ [^\(] ]]
-}
-
 module_apply() {
   local cpu vendors v pkg nvidia=0 known=0
   local -a want=("${_DRIVERS_BASE[@]}") firmware=() install=()
@@ -81,7 +72,13 @@ module_apply() {
   # Microcode and AMD GPU firmware live in Kali's non-free-firmware component.
   # Without it they cannot be installed: warn and carry on with the rest.
   for pkg in "${firmware[@]}"; do
-    if pkg_installed "$pkg" || _drivers_has_candidate "$pkg"; then
+    if pkg_installed "$pkg" || apt_has_candidate "$pkg"; then
+      want+=("$pkg")
+      continue
+    fi
+    # Stale lists (a fresh image) hide the candidate: refresh once and look again.
+    apt_update_once || return 1
+    if apt_has_candidate "$pkg"; then
       want+=("$pkg")
     else
       log_warn "$pkg is not available from apt; enable the non-free-firmware component in your Kali sources and run the installer again"

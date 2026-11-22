@@ -218,6 +218,24 @@ h "REPO_ROOT='$LISTREPO'; DRY_RUN=1; install_package_list t" >"$WORK/out" 2>&1
 [[ ! -s "$FAKE_STATE/apt.log" ]] && grep -q 'would run' "$WORK/out"
 check "install_package_list: dry-run runs no apt-get" $?
 
+# --- apt/dpkg output parsers force LC_ALL=C ----------------------------------
+# These fakes answer in the C locale only when LC_ALL=C, like the real tools
+# translate their output otherwise.
+mkdir -p "$WORK/locbin"
+cat >"$WORK/locbin/apt-cache" <<'EOS'
+#!/bin/sh
+if [ "${LC_ALL:-}" = C ]; then echo "  Candidate: 1.0-1"; else echo "  Candidat : 1.0-1"; fi
+EOS
+cat >"$WORK/locbin/dpkg-query" <<'EOS'
+#!/bin/sh
+if [ "${LC_ALL:-}" = C ]; then printf 'install ok installed'; else printf 'install ok installe'; fi
+EOS
+chmod +x "$WORK/locbin"/*
+LC_ALL=C.UTF-8 PATH="$WORK/locbin:$PATH" h "apt_has_candidate somepkg"
+check "apt_has_candidate: parses the C-locale output even when the caller's locale is not plain C" $?
+LC_ALL=C.UTF-8 PATH="$WORK/locbin:$PATH" h "pkg_installed somepkg"
+check "pkg_installed: reads the C-locale status even when the caller's locale is not plain C" $?
+
 # --- download_verified ------------------------------------------------------
 PAYLOAD="$WORK/payload.bin"
 printf 'the payload\n' >"$PAYLOAD"

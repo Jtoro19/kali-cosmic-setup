@@ -20,8 +20,17 @@ cat >"$WORK/bin/apt-cache" <<'EOS'
 #!/bin/sh
 for a in "$@"; do pkg="$a"; done
 echo "$pkg:"
+# FAKE_CANDIDATE_AFTER_UPDATE: these packages only get a candidate once an
+# `apt-get update` was logged (stale lists on a fresh image).
+stale=0
+case " ${FAKE_CANDIDATE_AFTER_UPDATE:-} " in
+  *" $pkg "*) grep -q ' update ' "$FAKE_STATE/apt.log" 2>/dev/null || stale=1 ;;
+esac
 case " ${FAKE_NO_CANDIDATE:-} " in
-  *" $pkg "*) echo "  Installed: (none)"; echo "  Candidate: (none)" ;;
+  *" $pkg "*) stale=1 ;;
+esac
+case "$stale" in
+  1) echo "  Installed: (none)"; echo "  Candidate: (none)" ;;
   *) echo "  Installed: (none)"; echo "  Candidate: 1.0-1" ;;
 esac
 # A long version table: a reader that stops early (grep -q) makes this
@@ -147,6 +156,23 @@ FAKE_NO_CANDIDATE="amd64-microcode firmware-amd-graphics" DRIVERS_CPU_VENDOR=amd
   grep -q '\[warn\].*non-free-firmware' "$WORK/out"
 check "packages with no candidate (non-free-firmware off): skipped with a warning, the rest installs" $?
 
+# --- stale lists: the candidate check follows an apt update (W2) ---------------
+reset_state
+FAKE_CANDIDATE_AFTER_UPDATE="amd64-microcode firmware-amd-graphics" DRIVERS_CPU_VENDOR=amd DRIVERS_GPU_VENDORS=amd drv
+[[ "$rc" == 0 ]] && installed_has amd64-microcode firmware-amd-graphics "${BASE[@]}" && ! grep -q '\[warn\]' "$WORK/out"
+check "stale lists: a package with no candidate before apt update is retried after it, no warning" $?
+[[ "$(grep -c ' update ' "$APT")" == 1 ]]
+check "stale lists: apt update runs once" $?
+reset_state
+FAKE_NO_CANDIDATE="amd64-microcode" DRIVERS_CPU_VENDOR=amd DRIVERS_GPU_VENDORS="" drv
+[[ "$rc" == 0 ]] && [[ "$(grep -c ' update ' "$APT")" == 1 ]] && grep -q '\[warn\].*amd64-microcode' "$WORK/out"
+check "still no candidate after the update: one update only, then the warning" $?
+reset_state
+printf '%s\n' "${BASE[@]}" >"$FAKE_STATE/installed"
+FAKE_NO_CANDIDATE="amd64-microcode" DRIVERS_CPU_VENDOR=amd DRIVERS_GPU_VENDORS="" drv
+[[ "$rc" == 0 ]] && grep -q '\[warn\].*amd64-microcode' "$WORK/out"
+check "stale lists with the base installed: warning only after the recheck" $?
+
 # --- already installed: nothing to do -----------------------------------------
 reset_state
 printf '%s\n' amd64-microcode firmware-amd-graphics "${BASE[@]}" >"$FAKE_STATE/installed"
@@ -161,6 +187,8 @@ FAKE_APT_RC=100 DRIVERS_CPU_VENDOR=amd DRIVERS_GPU_VENDORS=amd drv
 check "a failing apt-get fails the module" $?
 
 # --- the module itself ---------------------------------------------------------
+! grep -q '_drivers_has_candidate' "$REPO_ROOT/modules/10-drivers.sh"
+check "the module reuses apt_has_candidate (no private copy)" $?
 ! grep -Eq 'i386|lib32|nvidia-inst|multilib' "$REPO_ROOT/modules/10-drivers.sh" 2>/dev/null
 check "the module source has no i386, lib32, multilib or nvidia-inst" $?
 

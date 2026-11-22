@@ -51,6 +51,10 @@ detection, so an empty value simulates a VM).
 - Virtio GPU (VM) or any unknown vendor: the vendor-specific parts are skipped
   with an info line, no warning; the mesa base still gives llvmpipe/virgl and
   lavapipe Vulkan, so no separate swrast package is needed.
+- Without `lspci`, detection falls back to the vendor files of
+  `/sys/class/drm/card*/device/vendor` (0x1002 AMD, 0x8086 Intel, 0x10de
+  NVIDIA); when neither source exists the module warns and treats the GPU as
+  unknown.
 - Unknown CPU vendor: warning, no microcode.
 - NVIDIA: warn only and point to Kali's `nvidia-driver`. It is never
   installed automatically: it needs DKMS and kernel headers and is a
@@ -67,7 +71,15 @@ detection, so an empty value simulates a VM).
   package has no apt candidate (component not enabled) the module warns, skips
   that package and installs the rest, so a stripped sources file never fails
   the run. `mesa-*` packages are in main and are required.
-- `apt-get update` runs once, only when something has to be installed.
+- `apt-get update` runs once, only when something has to be installed or when
+  a wanted firmware package shows no candidate (stale lists on a fresh image):
+  the check is repeated once after the refresh, and only then warned about.
+- Candidate checks use `apt_has_candidate` from `lib/common.sh`, which forces
+  `LC_ALL=C` (apt prints `Candidate:` translated otherwise). The same applies to
+  the other apt and dpkg output parsers.
+- Intel GPUs get `intel-media-va-driver` (Broadwell and newer). Pre-Broadwell
+  hardware needs `i965-va-driver`, which is not covered; the mesa base still
+  gives GL and Vulkan where supported.
 - Microcode is installed in a VM too (the CPU vendor is passed through): it is
   harmless and keeps one rule for every machine.
 

@@ -313,7 +313,7 @@ _apt_get_may_fail() {
 pkg_installed() {
   local status
   # shellcheck disable=SC2016  # ${Status} is dpkg-query syntax, not shell
-  status="$(dpkg-query -W -f='${Status}' -- "$1" 2>/dev/null)" || return 1
+  status="$(LC_ALL=C dpkg-query -W -f='${Status}' -- "$1" 2>/dev/null)" || return 1
   [[ "$status" == "install ok installed" ]]
 }
 
@@ -360,10 +360,11 @@ ensure_packages() {
 
 # apt_has_candidate <pkg>: true when apt knows a version to install. The output
 # is captured first: a `grep -q` in a pipe would end apt-cache early and
-# pipefail would report that as a failure.
+# pipefail would report that as a failure. LC_ALL=C because apt-cache prints
+# "Candidate:" translated otherwise.
 apt_has_candidate() {
   local out
-  out="$(apt-cache policy "$1" 2>/dev/null)" || return 1
+  out="$(LC_ALL=C apt-cache policy "$1" 2>/dev/null)" || return 1
   [[ "$out" =~ Candidate:\ [^\(] ]]
 }
 
@@ -371,7 +372,7 @@ apt_has_candidate() {
 # is not installed.
 pkg_version() {
   # shellcheck disable=SC2016  # ${Version} is dpkg-query syntax, not shell
-  dpkg-query -W -f='${Version}' -- "$1" 2>/dev/null || true
+  LC_ALL=C dpkg-query -W -f='${Version}' -- "$1" 2>/dev/null || true
 }
 
 # _read_package_file <file>: print one package per line, dropping comments
@@ -575,12 +576,25 @@ system_unit_exists() {
   [[ -n "$(systemctl list-unit-files --no-legend -- "$1" 2>/dev/null)" ]]
 }
 
+# system_unit_masked <unit>: true when the unit is masked (an admin decision:
+# `systemctl enable` fails on it).
+system_unit_masked() {
+  local state
+  state="$(systemctl is-enabled -- "$1" 2>/dev/null || true)"
+  [[ "$state" == masked* ]]
+}
+
 # ensure_system_unit_enabled <unit>: enable and start a system unit only when
-# its unit file exists and it is not enabled yet. Read-only check.
+# its unit file exists, it is not enabled yet and the admin has not masked it
+# (a masked unit is skipped, never unmasked). Read-only check.
 ensure_system_unit_enabled() {
   local unit="$1"
   system_unit_exists "$unit" || return 0
   if systemctl is-enabled --quiet -- "$unit" >/dev/null 2>&1; then
+    return 0
+  fi
+  if system_unit_masked "$unit"; then
+    log_info "$unit is masked: leaving it alone"
     return 0
   fi
   log_change "enable system unit: $unit"
@@ -618,24 +632,36 @@ detect_cpu_vendor() {
 
 # detect_gpu_vendors: print the space-separated vendors of the display devices
 # (amd, intel, nvidia, always in that order), by PCI vendor id: 1002, 8086,
-# 10de. Empty when there is no such GPU (a VM's virtio GPU is 1af4) or lspci
-# is missing.
+# 10de. Uses lspci; without it, falls back to the vendor files of
+# /sys/class/drm/card*/device (0x1002 ...), and warns when neither source
+# exists. Empty when there is no such GPU (a VM's virtio GPU is 1af4).
 detect_gpu_vendors() {
-  local id amd=0 intel=0 nvidia=0
-  local -a out=()
-  if ! command -v lspci >/dev/null 2>&1; then
-    printf '\n'
-    return 0
+  local id amd=0 intel=0 nvidia=0 f seen=0
+  local -a out=() ids=()
+  if command -v lspci >/dev/null 2>&1; then
+    mapfile -t ids < <(lspci -nn 2>/dev/null | grep -E 'VGA|3D|Display' |
+      grep -Eo '\[[0-9a-fA-F]{4}:[0-9a-fA-F]{4}\]' | tr 'A-F' 'a-f' | cut -c2-5 || true)
+    seen=1
+  else
+    for f in "$(rootpath /sys/class/drm)"/card*/device/vendor; do
+      [[ -r "$f" ]] || continue
+      seen=1
+      id="$(<"$f")"
+      id="${id,,}"
+      ids+=("${id#0x}")
+    done
+    if ((!seen)); then
+      log_warn "cannot detect the GPU: lspci is missing and /sys/class/drm has no card (install pciutils to enable vendor-specific drivers)"
+    fi
   fi
-  while IFS= read -r id; do
+  for id in "${ids[@]}"; do
     case "$id" in
-      '[1002:'*) amd=1 ;;
-      '[8086:'*) intel=1 ;;
-      '[10de:'*) nvidia=1 ;;
+      1002) amd=1 ;;
+      8086) intel=1 ;;
+      10de) nvidia=1 ;;
       *) ;;
     esac
-  done < <(lspci -nn 2>/dev/null | grep -E 'VGA|3D|Display' |
-    grep -Eo '\[[0-9a-fA-F]{4}:[0-9a-fA-F]{4}\]' | tr 'A-F' 'a-f' || true)
+  done
   if ((amd)); then out+=(amd); fi
   if ((intel)); then out+=(intel); fi
   if ((nvidia)); then out+=(nvidia); fi

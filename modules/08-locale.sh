@@ -91,10 +91,15 @@ module_apply() {
     run_sudo update-locale "${want[@]}" || return 1
   fi
 
+  # A LC_ALL line overrides LANG and every LC_* variable this module sets.
+  if [[ -n "$(_locale_value "$default_file" LC_ALL)" ]]; then
+    log_warn "${default_file#"${KCS_ROOT:-}"} sets LC_ALL, which overrides the language and format locales this module configures; remove that line to get them"
+  fi
+
   # The keyboard layout is not touched (the keyboard module owns it). The time
   # zone only changes on request.
   if [[ -n "${LOCALE_TZ:-}" ]]; then
-    if [[ ! -e "/usr/share/zoneinfo/$LOCALE_TZ" ]]; then
+    if [[ ! -f "/usr/share/zoneinfo/$LOCALE_TZ" ]]; then
       log_error "unknown time zone: $LOCALE_TZ"
       return 1
     fi

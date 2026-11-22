@@ -184,6 +184,23 @@ loc
 grep -q 'total changes: 0' "$WORK/out"
 check "single-quoted values are read as the same value (0 changes)" $?
 
+# --- LC_ALL in /etc/default/locale overrides the module ----------------------
+reset_state
+printf '%s\n' 'LANG="en_US.UTF-8"' 'LC_ALL="C.UTF-8"' >"$DEF"
+loc
+[[ "$rc" == 0 ]] && grep -q '\[warn\].*LC_ALL' "$WORK/out"
+check "LC_ALL set in /etc/default/locale: warns that it overrides the module" $?
+reset_state
+loc
+! grep -q 'LC_ALL' "$WORK/out"
+check "no LC_ALL in /etc/default/locale: no LC_ALL warning" $?
+
+# --- LOCALE_TZ must be a zone file, not a directory ---------------------------
+reset_state
+LOCALE_TZ=America loc
+[[ "$rc" != 0 ]] && grep -q 'unknown time zone' "$WORK/out"
+check "LOCALE_TZ naming a zoneinfo directory is an unknown time zone" $?
+
 # --- failures fail the module ------------------------------------------------
 reset_state
 FAKE_FAIL='locale-gen' loc
