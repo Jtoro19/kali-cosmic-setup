@@ -17,6 +17,9 @@ is in [specs/000-plan.md](specs/000-plan.md).
 - sudo (the installer refuses to run as root and calls sudo where needed)
 - Network access to the Kali mirror and to the third-party repositories the
   modules use
+- Time and disk space for the first run: it does a full system upgrade and
+  then installs the COSMIC package (about 230 MB to download and about 1 GB
+  once installed), so it can take a while. Keep a few GB of free disk space.
 
 A real run is refused when `/etc/os-release` does not say kali or debian;
 `--dry-run` works anywhere and changes nothing.
