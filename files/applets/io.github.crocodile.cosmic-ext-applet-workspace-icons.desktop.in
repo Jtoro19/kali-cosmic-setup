@@ -1,0 +1,18 @@
+[Desktop Entry]
+Name=Workspace Icons
+Name[cs]=Ikony pracovních ploch
+Comment=Show application icons on COSMIC workspaces
+Comment[cs]=Zobrazuje ikony aplikací na pracovních plochách COSMIC
+Type=Application
+Exec=@HOME@/.local/bin/cosmic-ext-applet-workspace-icons
+Terminal=false
+Categories=COSMIC;
+Keywords=COSMIC;Applet;Workspace;Workspaces;Icons;
+Keywords[cs]=COSMIC;Applet;Pracovní;Plocha;Plochy;Ikony;
+Icon=io.github.crocodile.cosmic-ext-applet-workspace-icons
+StartupNotify=true
+NoDisplay=true
+X-CosmicApplet=true
+X-HostWaylandDisplay=true
+X-OverflowPriority=5
+X-OverflowMinSize=8
