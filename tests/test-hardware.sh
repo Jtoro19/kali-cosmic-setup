@@ -84,6 +84,37 @@ check "gpu: without lspci, sysfs vendors come out sorted amd intel nvidia" $?
 [[ "$(drm 0x1af4 2>&1)" == "" ]]
 check "gpu: without lspci, a virtio card in sysfs gives an empty list and no warning" $?
 
+# gpu_is_virtual: true only when there is at least one cardN and all are virtio.
+virt() { # virt <vendor id...>: fake cards (and connector dirs), then gpu_is_virtual
+  local i=0 v
+  rm -rf -- "$WORK/root/sys"
+  mkdir -p "$WORK/root/sys/class/drm"
+  for v in "$@"; do
+    mkdir -p "$WORK/root/sys/class/drm/card$i/device" "$WORK/root/sys/class/drm/card$i-Virtual-1"
+    echo "$v" >"$WORK/root/sys/class/drm/card$i/device/vendor"
+    i=$((i + 1))
+  done
+  KCS_ROOT="$WORK/root" gpu_is_virtual
+}
+virt 0x1af4
+check "virtual: a single virtio card is virtual" $?
+virt 0x1af4 0x1AF4
+check "virtual: two virtio cards (any case) are virtual" $?
+! virt 0x8086
+check "virtual: an Intel card is not virtual" $?
+! virt 0x1af4 0x1002
+check "virtual: virtio plus a real GPU is not virtual" $?
+! virt
+check "virtual: no card at all is not virtual" $?
+rm -rf -- "$WORK/root/sys"
+mkdir -p "$WORK/root/sys/class/drm/card0-Virtual-1/device"
+echo 0x1af4 >"$WORK/root/sys/class/drm/card0-Virtual-1/device/vendor"
+! KCS_ROOT="$WORK/root" gpu_is_virtual
+check "virtual: a connector entry (card0-Virtual-1) is not a card" $?
+rm -rf -- "$WORK/root/sys"
+! KCS_ROOT="$WORK/root" gpu_is_virtual
+check "virtual: no /sys/class/drm is not virtual" $?
+
 if ((failures > 0)); then
   printf '%d check(s) failed\n' "$failures"
   exit 1

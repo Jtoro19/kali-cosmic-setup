@@ -86,6 +86,72 @@ _packages_brave_untrust() {
   fi
 }
 
+# --- Browsers on a virtio GPU: run as X11 clients ---------------------------
+# On a QEMU/KVM guest with a virtio GPU, Chromium and Brave crash as native
+# Wayland clients on COSMIC (see specs/packages.md). Only on such a GPU (never
+# on real hardware) Chromium gets a /etc/chromium.d drop-in and Brave a
+# generated desktop entry in /usr/local/share/applications that wins over the
+# packaged one. Both carry the marker, which is how the module recognises them.
+_PACKAGES_VGPU_MARKER="kali-cosmic-setup: virtio-gpu browser workaround"
+_PACKAGES_VGPU_FLAG="--ozone-platform=x11"
+_PACKAGES_VGPU_CHROMIUM="/etc/chromium.d/kali-cosmic-setup-virtio-gpu"
+_PACKAGES_VGPU_BRAVE_SRC="/usr/share/applications/brave-browser.desktop"
+_PACKAGES_VGPU_BRAVE_DEST="/usr/local/share/applications/brave-browser.desktop"
+
+# _packages_vgpu_drop <path> <content>: with a virtual GPU, make <path> hold
+# <content>; otherwise remove it. An empty <content> also means "remove". A
+# file without the marker is not ours: it is left alone (never replaced) with a
+# warning. Sets FILE_CHANGED like ensure_file_content.
+_packages_vgpu_drop() {
+  local path="$1" content="$2" real
+  real="$(rootpath "$path")"
+  FILE_CHANGED=0
+  if [[ -e "$real" ]] && ! grep -qF -- "$_PACKAGES_VGPU_MARKER" "$real"; then
+    log_warn "$path exists without the kali-cosmic-setup marker: leaving it alone (the virtio-gpu browser workaround is not applied through it)"
+    return 0
+  fi
+  if [[ -n "$content" ]]; then
+    ensure_file_content "$real" "$content"
+  elif [[ -e "$real" ]]; then
+    FILE_CHANGED=1
+    log_change "remove $path (virtio-gpu browser workaround, not needed on this GPU)"
+    _priv_run "$real" rm -f -- "$real"
+  fi
+}
+
+# _packages_brave_x11_entry: print the packaged Brave desktop entry with the
+# flag after the executable of every Exec= line, behind the marker comment.
+_packages_brave_x11_entry() {
+  printf '# %s: generated from %s\n' "$_PACKAGES_VGPU_MARKER" "$_PACKAGES_VGPU_BRAVE_SRC"
+  sed -E "s|^(Exec=[^[:space:]]+)|\\1 $_PACKAGES_VGPU_FLAG|" "$(rootpath "$_PACKAGES_VGPU_BRAVE_SRC")"
+}
+
+_packages_browsers_vgpu() {
+  local chromium="" brave="" changed=0 dir
+  if gpu_is_virtual; then
+    chromium="# $_PACKAGES_VGPU_MARKER: Chromium crashes as a native Wayland client with a virtio GPU
+export CHROMIUM_FLAGS=\"\$CHROMIUM_FLAGS $_PACKAGES_VGPU_FLAG\""
+    if [[ -f "$(rootpath "$_PACKAGES_VGPU_BRAVE_SRC")" ]]; then
+      brave="$(_packages_brave_x11_entry)"
+    fi
+  fi
+  _packages_vgpu_drop "$_PACKAGES_VGPU_CHROMIUM" "$chromium"
+  ((FILE_CHANGED)) && changed=1
+  _packages_vgpu_drop "$_PACKAGES_VGPU_BRAVE_DEST" "$brave"
+  ((FILE_CHANGED)) && changed=1
+  if ((changed)) && command -v update-desktop-database >/dev/null 2>&1; then
+    dir="$(dirname "$(rootpath "$_PACKAGES_VGPU_BRAVE_DEST")")"
+    if [[ -d "$dir" ]]; then
+      if _needs_sudo "$dir"; then
+        run_sudo_may_fail update-desktop-database "$dir" || true
+      else
+        run_may_fail update-desktop-database "$dir" || true
+      fi
+    fi
+  fi
+  return 0
+}
+
 # _packages_sha256_ok <file> <sha256>: true when the file has that SHA-256.
 _packages_sha256_ok() {
   printf '%s  %s\n' "$2" "$1" | sha256sum -c --status
@@ -175,5 +241,6 @@ module_apply() {
   trap _packages_cleanup EXIT
   install_package_list core || return 1
   _packages_brave || return 1
+  _packages_browsers_vgpu || return 1
   _packages_peazip || return 1
 }

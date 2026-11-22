@@ -384,6 +384,115 @@ FAKE_APT_RC=100 pk
 [[ "$rc" != 0 ]]
 check "a failing apt-get fails the module" $?
 
+# --- virtio GPU: browsers start with X11 ---------------------------------------
+CHR=/etc/chromium.d/kali-cosmic-setup-virtio-gpu
+BDESK=/usr/local/share/applications/brave-browser.desktop
+BSRC=/usr/share/applications/brave-browser.desktop
+CHR_LINE="export CHROMIUM_FLAGS=\"\$CHROMIUM_FLAGS --ozone-platform=x11\""
+set_gpus() { # set_gpus <vendor id...>: fake /sys/class/drm cards (and connectors)
+  local i=0 v
+  rm -rf -- "${KCS_ROOT:?}/sys"
+  for v in "$@"; do
+    mkdir -p "$KCS_ROOT/sys/class/drm/card$i/device" "$KCS_ROOT/sys/class/drm/card$i-Virtual-1"
+    echo "$v" >"$KCS_ROOT/sys/class/drm/card$i/device/vendor"
+    i=$((i + 1))
+  done
+}
+write_brave_src() {
+  mkdir -p "$KCS_ROOT/usr/share/applications"
+  cat >"$KCS_ROOT$BSRC" <<'EOS'
+[Desktop Entry]
+Version=1.0
+Name=Brave Web Browser
+Exec=/usr/bin/brave-browser-stable %U
+StartupNotify=true
+Icon=brave-browser
+[Desktop Action new-window]
+Name=New Window
+Exec=/usr/bin/brave-browser-stable
+[Desktop Action new-private-window]
+Name=New Incognito Window
+Exec=/usr/bin/brave-browser-stable --incognito
+EOS
+}
+snap() { find "$KCS_ROOT" -type f -exec md5sum {} + 2>/dev/null | sort; }
+
+reset_state
+set_gpus 0x1af4
+write_brave_src
+pk
+[[ "$rc" == 0 && -f "$KCS_ROOT$CHR" && "$(stat -c %a "$KCS_ROOT$CHR")" == 644 ]] &&
+  grep -q 'kali-cosmic-setup: virtio-gpu browser workaround' "$KCS_ROOT$CHR" &&
+  grep -qxF "$CHR_LINE" "$KCS_ROOT$CHR"
+check "virtio: the chromium.d drop-in is written (0644, marker, flag), chromium need not be installed" $?
+[[ "$(grep -c '^Exec=' "$KCS_ROOT$BDESK")" == 3 ]] &&
+  grep -qx 'Exec=/usr/bin/brave-browser-stable --ozone-platform=x11 %U' "$KCS_ROOT$BDESK" &&
+  grep -qx 'Exec=/usr/bin/brave-browser-stable --ozone-platform=x11' "$KCS_ROOT$BDESK" &&
+  grep -qx 'Exec=/usr/bin/brave-browser-stable --ozone-platform=x11 --incognito' "$KCS_ROOT$BDESK" &&
+  [[ "$(head -n1 "$KCS_ROOT$BDESK")" == '# kali-cosmic-setup: virtio-gpu browser workaround'* ]]
+check "virtio: the Brave desktop entry is generated with the flag in every Exec line and a marker first" $?
+diff <(grep -v -e '^Exec=' -e '^# kali-cosmic-setup' "$KCS_ROOT$BDESK") <(grep -v '^Exec=' "$KCS_ROOT$BSRC") >/dev/null
+check "virtio: every other line of the desktop entry is kept" $?
+before="$(snap)"
+pk
+[[ "$rc" == 0 && "$(snap)" == "$before" ]] && grep -q 'total changes: 0' "$WORK/out"
+check "virtio: a second run changes nothing (total changes: 0)" $?
+sed -i 's/^Name=Brave Web Browser/Name=Brave Renamed/' "$KCS_ROOT$BSRC"
+pk
+[[ "$rc" == 0 ]] && grep -qx 'Name=Brave Renamed' "$KCS_ROOT$BDESK" && grep -q 'total changes: 1' "$WORK/out"
+check "virtio: a changed source desktop entry regenerates the generated one (1 change)" $?
+
+# Not virtual: the marker files are removed, other files are left.
+set_gpus 0x8086
+pk
+[[ "$rc" == 0 && ! -e "$KCS_ROOT$CHR" && ! -e "$KCS_ROOT$BDESK" && -f "$KCS_ROOT$BSRC" ]] &&
+  grep -q 'total changes: 2' "$WORK/out"
+check "real GPU: both marker files are removed (2 changes), the source entry stays" $?
+pk
+grep -q 'total changes: 0' "$WORK/out"
+check "real GPU: a second run changes nothing" $?
+set_gpus 0x1af4 0x10de
+pk
+[[ ! -e "$KCS_ROOT$CHR" && ! -e "$KCS_ROOT$BDESK" ]]
+check "mixed virtio and real GPUs: nothing is written" $?
+
+# Files without the marker are never touched, with a warning.
+set_gpus 0x8086
+mkdir -p "$KCS_ROOT/etc/chromium.d" "$KCS_ROOT/usr/local/share/applications"
+echo '# mine' >"$KCS_ROOT$CHR"
+echo '[Desktop Entry]' >"$KCS_ROOT$BDESK"
+pk
+[[ "$rc" == 0 && "$(<"$KCS_ROOT$CHR")" == '# mine' && "$(<"$KCS_ROOT$BDESK")" == '[Desktop Entry]' ]] &&
+  grep -q '\[warn\].*kali-cosmic-setup-virtio-gpu' "$WORK/out" &&
+  grep -q '\[warn\].*brave-browser.desktop' "$WORK/out"
+check "real GPU: files without the marker are left alone with a warning each" $?
+set_gpus 0x1af4
+pk
+[[ "$rc" == 0 && "$(<"$KCS_ROOT$CHR")" == '# mine' && "$(<"$KCS_ROOT$BDESK")" == '[Desktop Entry]' ]] &&
+  ! ls "$KCS_ROOT"/etc/chromium.d/*.bak.* >/dev/null 2>&1 &&
+  grep -q '\[warn\].*kali-cosmic-setup-virtio-gpu' "$WORK/out" && grep -q '\[warn\].*brave-browser.desktop' "$WORK/out"
+check "virtio: files without the marker are not replaced (no backup) and warn" $?
+
+# virtio without the Brave source entry: only the drop-in.
+reset_state
+set_gpus 0x1af4
+pk
+[[ "$rc" == 0 && -f "$KCS_ROOT$CHR" && ! -e "$KCS_ROOT$BDESK" ]]
+check "virtio: without /usr/share/applications/brave-browser.desktop only the drop-in is written" $?
+
+# Dry-run writes nothing.
+reset_state
+set_gpus 0x1af4
+write_brave_src
+pk --dry-run
+[[ "$rc" == 0 && ! -e "$KCS_ROOT$CHR" && ! -e "$KCS_ROOT$BDESK" ]] && grep -q '\[change\]' "$WORK/out"
+check "virtio dry-run: nothing is written, the changes are reported" $?
+pk
+set_gpus 0x8086
+pk --dry-run
+[[ -f "$KCS_ROOT$CHR" && -f "$KCS_ROOT$BDESK" ]]
+check "real GPU dry-run: nothing is removed" $?
+
 # --- static checks on the data and the module --------------------------------------
 LIST="$REPO_ROOT/files/packages/core.apt"
 pkgs="$(sed -e 's/#.*//' -e 's/[[:space:]]*$//' "$LIST" | grep -v '^$')"

@@ -824,6 +824,24 @@ detect_gpu_vendors() {
   printf '%s\n' "${out[*]:-}"
 }
 
+# gpu_is_virtual: true only when /sys/class/drm has at least one card (the
+# cardN entries; connectors such as card0-Virtual-1 are not cards) and every
+# card's PCI vendor is 0x1af4 (virtio, the GPU of a QEMU/KVM guest). False for
+# real hardware, for a mix of virtual and real GPUs, and when no card is found.
+gpu_is_virtual() {
+  local d f id n=0
+  for d in "$(rootpath /sys/class/drm)"/card*; do
+    [[ "${d##*/}" =~ ^card[0-9]+$ ]] || continue
+    f="$d/device/vendor"
+    [[ -r "$f" ]] || continue
+    id="$(<"$f")"
+    id="${id,,}"
+    [[ "${id#0x}" == 1af4 ]] || return 1
+    n=$((n + 1))
+  done
+  ((n > 0))
+}
+
 # awk helpers shared by the ensure_ini_line programs: a trailing CR (a CRLF
 # file) is ignored when comparing, and a key matches with optional blanks around
 # the "=" ("key = value" is the same key as "key=value").

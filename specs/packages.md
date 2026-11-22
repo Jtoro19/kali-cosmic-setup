@@ -28,8 +28,11 @@ in `modules/15-packages.sh` because they need a key, a pin or a checksum.
 - Packages: the core list below, `gnupg curl ca-certificates` (to fetch and
   verify the key), `brave-browser` (its dependency `brave-keyring` comes with
   it), `libgtk2.0-0t64` and `peazip`.
+- Only on a virtio GPU (see "Browsers on a virtio GPU"):
+  `/etc/chromium.d/kali-cosmic-setup-virtio-gpu` and
+  `/usr/local/share/applications/brave-browser.desktop`, both root-owned 0644.
 - Kali tools are not touched; packages already installed are skipped.
-- Order: core list, Brave, PeaZip. A failure in a later step leaves the earlier
+- Order: core list, Brave, browsers on a virtio GPU, PeaZip. A failure in a later step leaves the earlier
   ones installed (apt is idempotent, the next run continues).
 
 ## What the module installs
@@ -158,9 +161,53 @@ Dropped, with the reason:
   also runs before the PeaZip runtime install when `libgtk2.0-0t64` is
   missing. A no-op run runs none.
 
+## Browsers on a virtio GPU
+
+Problem (verified on the test VM, `virtio-vga-gl`, PCI `1af4:1050`): Chromium
+156 and Brave, as native Wayland clients with GPU compositing, die at start with
+`create_immed failed and produced an invalid wl_buffer` and `Trace/breakpoint
+trap`; `cosmic-comp` logs `import for wrong devices`. From the COSMIC app menu
+they simply do not open. Both start with `--ozone-platform=x11` and with
+`--disable-gpu-compositing` (each tested).
+
+Decision: run them as X11 clients (XWayland), only when every `cardN` under
+`/sys/class/drm` has PCI vendor `0x1af4` and at least one exists
+(`gpu_is_virtual` in `lib/common.sh`; connector entries such as
+`card0-Virtual-1` are not cards; a mix of virtual and real GPUs is not virtual).
+
+- **Why x11 and not `--disable-gpu-compositing`**: both work; x11 keeps GPU
+  rasterisation, so it is the lighter loss.
+- **Why only on virtio**: on real hardware native Wayland works and the flag
+  would only make the browsers worse (XWayland, blurry fractional scaling).
+- **Chromium**: `/etc/chromium.d/kali-cosmic-setup-virtio-gpu` (a marker comment
+  plus `export CHROMIUM_FLAGS="$CHROMIUM_FLAGS --ozone-platform=x11"`). Debian's
+  `/usr/bin/chromium` wrapper sources `/etc/chromium.d/*`, so every launch path
+  is covered, a terminal included. Decision: the file is written whether or not
+  chromium is installed, because it is inert without the package and the user
+  may install Chromium later.
+- **Brave**: the wrapper `/usr/bin/brave-browser` and the binary read no flags
+  file (verified), so the only launch path covered is the desktop entry. The
+  module generates `/usr/local/share/applications/brave-browser.desktop` from
+  `/usr/share/applications/brave-browser.desktop` (when it exists): the flag is
+  inserted after the executable in every `Exec=` line, everything else is kept,
+  and a marker comment line goes first. `/usr/local/share` precedes
+  `/usr/share` in `XDG_DATA_DIRS`, so the app menu, `xdg-open` and the mime
+  default (`brave-browser.desktop`, set by the mime module) use it. It is
+  compared with the installed file and rewritten only when different, so a
+  Brave update that changes its entry is picked up on the next run;
+  `update-desktop-database` runs on that directory only when something changed
+  (non-fatal). A `brave-browser` typed in a terminal does not read it and
+  still needs the flag by hand. No `$HOME` file is written.
+- **Marker**: both files carry `kali-cosmic-setup: virtio-gpu browser
+  workaround`. On a GPU that is not virtual, a file with the marker is removed
+  (logged as a change); a file without the marker, at either path and on any
+  GPU, is never replaced or removed: it is left alone with a warning (so no
+  backup is ever needed).
+- Dry-run writes and removes nothing; a second run reports `total changes: 0`.
+
 ## Hardware detection
 
-None.
+The virtio check above (`gpu_is_virtual`); nothing else.
 
 ## Idempotency check
 
@@ -180,6 +227,8 @@ sudo rm -f /etc/apt/sources.list.d/brave-browser.sources /etc/apt/preferences.d/
 # the module already removes the brave-keyring symlink below; purge removes it too
 sudo rm -f /etc/apt/trusted.gpg.d/brave-browser-release.gpg
 sudo apt-get update
+# virtio GPU browser workaround (only exists on a virtio GPU)
+sudo rm -f /etc/chromium.d/kali-cosmic-setup-virtio-gpu /usr/local/share/applications/brave-browser.desktop
 # core packages: purge any you do not want, for example
 sudo apt-get purge <package>      # one at a time; dependencies shared with other software are refused
 ```
@@ -197,6 +246,7 @@ apt-cache policy brave-browser            # candidate from the Brave repo, prior
 apt-cache policy brave-origin             # other Brave package: blocked, Candidate: (none)
 ls -l /etc/apt/trusted.gpg.d/brave-browser-release.gpg   # must not exist
 gpg --show-keys --with-colons /etc/apt/keyrings/brave-browser-archive-keyring.gpg | grep '^fpr'
+ls /etc/chromium.d/kali-cosmic-setup-virtio-gpu /usr/local/share/applications/brave-browser.desktop   # virtio GPU only
 ./install.sh --only packages --dry-run    # "Nothing to change"
 tests/test-packages.sh
 ```
