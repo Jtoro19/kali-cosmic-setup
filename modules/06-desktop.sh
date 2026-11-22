@@ -80,35 +80,17 @@ _desktop_repo() {
   fi
 }
 
-# _desktop_migrate_old_unit: an earlier version of this module installed its
-# own /etc/systemd/system/cosmic-greeter.service as the display manager alias.
-# Debian's greetd postinst would overwrite that alias, so disable and remove it
-# (with a backup). Sets FILE_CHANGED=1 when it removed the file.
-_desktop_migrate_old_unit() {
-  local old
-  old="$(rootpath /etc/systemd/system/cosmic-greeter.service)"
-  FILE_CHANGED=0
-  [[ -e "$old" || -L "$old" ]] || return 0
-  log_change "remove the old cosmic-greeter.service (replaced by the greetd drop-in)"
-  run_sudo_may_fail systemctl disable cosmic-greeter.service ||
-    log_warn "could not disable the old cosmic-greeter.service, removing the file anyway"
-  backup_file "$old"
-  _priv_run "$old" rm -f -- "$old"
-  FILE_CHANGED=1
-}
-
-# _desktop_files: the files the package does not ship, plus the old unit
-# migration. daemon-reload only when a unit or drop-in changed.
+# _desktop_files: the files the package does not ship. daemon-reload only when
+# a unit or drop-in changed. install_file reports through the global
+# FILE_CHANGED (see lib/common.sh), so it is read right after each call.
 _desktop_files() {
   local src="$REPO_ROOT/files/desktop" units_changed=0
-  _desktop_migrate_old_unit || return 1
-  ((FILE_CHANGED)) && units_changed=1
   install_file "$src/cosmic-greeter-daemon.service" \
     "$(rootpath /etc/systemd/system/cosmic-greeter-daemon.service)" 0644 || return 1
-  ((FILE_CHANGED)) && units_changed=1
+  units_changed=$((units_changed | FILE_CHANGED))
   install_file "$src/greetd-cosmic.conf" \
     "$(rootpath /etc/systemd/system/greetd.service.d/cosmic-greeter.conf)" 0644 || return 1
-  ((FILE_CHANGED)) && units_changed=1
+  units_changed=$((units_changed | FILE_CHANGED))
   install_file "$src/cosmic-greeter.toml" \
     "$(rootpath /etc/greetd/cosmic-greeter.toml)" 0644 || return 1
   install_file "$src/cosmic-greeter.pam" \
@@ -116,6 +98,23 @@ _desktop_files() {
   if ((units_changed)); then
     run_sudo systemctl daemon-reload || return 1
   fi
+}
+
+# _desktop_migrate_old_unit: an earlier version of this module installed its
+# own /etc/systemd/system/cosmic-greeter.service as the display manager alias.
+# Debian's greetd postinst would overwrite that alias, so disable and remove it
+# (with a backup). Called only after the greetd link exists, so a failure
+# earlier never leaves the machine without a display-manager link.
+_desktop_migrate_old_unit() {
+  local old
+  old="$(rootpath /etc/systemd/system/cosmic-greeter.service)"
+  [[ -e "$old" || -L "$old" ]] || return 0
+  log_change "remove the old cosmic-greeter.service (replaced by the greetd drop-in)"
+  run_sudo_may_fail systemctl disable cosmic-greeter.service ||
+    log_warn "could not disable the old cosmic-greeter.service, removing the file anyway"
+  backup_file "$old"
+  _priv_run "$old" rm -f -- "$old" || return 1
+  run_sudo systemctl daemon-reload || return 1
 }
 
 # _desktop_greeter_user: the package has no maintainer scripts, so create the
@@ -150,10 +149,16 @@ _desktop_dm_is_greetd() {
 # _desktop_verify_dm: greetd must be the display manager by both the unit link
 # and /etc/X11/default-display-manager. Logs the reason and returns 1 if not.
 _desktop_verify_dm() {
-  local dm_file
+  local dm_file dm_link target
   dm_file="$(rootpath /etc/X11/default-display-manager)"
+  dm_link="$(rootpath /etc/systemd/system/display-manager.service)"
   if ! _desktop_dm_is_greetd; then
-    log_error "display-manager.service does not resolve to greetd.service; another display manager still holds it. Fix it and run the installer again"
+    target="$(readlink -- "$dm_link" 2>/dev/null || true)"
+    if [[ -z "$target" && ! -e "$dm_link" ]]; then
+      log_error "display-manager.service is missing: $dm_link was not created. Fix it and run the installer again"
+    else
+      log_error "display-manager.service points to ${target:-$dm_link}, not greetd.service. Fix it and run the installer again"
+    fi
     return 1
   fi
   if [[ ! -f "$dm_file" || "$(<"$dm_file")" != /usr/sbin/greetd ]]; then
@@ -163,12 +168,11 @@ _desktop_verify_dm() {
 }
 
 # _desktop_debconf_dm: the current answer of shared/default-x-display-manager
-# (empty when unknown). debconf's database is root-only, so try sudo first
-# (no prompt: -n) and fall back to a plain read. Read-only.
+# (empty when unknown). debconf's database is root-only, hence sudo_read.
+# Read-only.
 _desktop_debconf_dm() {
   local out
-  out="$(sudo -n debconf-show greetd 2>/dev/null)" ||
-    out="$(debconf-show greetd 2>/dev/null)" || out=""
+  out="$(sudo_read debconf-show greetd)" || out=""
   printf '%s\n' "$out" |
     awk '/shared\/default-x-display-manager:/ { sub(/^.*: */, ""); print; exit }'
 }
@@ -200,6 +204,18 @@ _desktop_display_manager() {
 
   ensure_file_content "$(rootpath /etc/X11/default-display-manager)" /usr/sbin/greetd || return 1
 
+  if ! _desktop_dm_is_greetd; then
+    log_change "link display-manager.service to greetd.service"
+    _priv_run "$dm_link" mkdir -p -- "$(dirname "$dm_link")" || return 1
+    _priv_run "$dm_link" ln -sfn -- /lib/systemd/system/greetd.service "$dm_link" || return 1
+    link_changed=1
+  fi
+  if [[ "$DRY_RUN" != "1" ]]; then
+    _desktop_verify_dm || return 1
+  fi
+
+  # Disabling another display manager only removes links that point at its own
+  # unit, so it cannot drop the greetd link made above.
   for s in "${_DESKTOP_OTHER_DM[@]}"; do
     if systemctl is-enabled --quiet "$s.service" >/dev/null 2>&1; then
       log_change "disable $s.service"
@@ -207,16 +223,8 @@ _desktop_display_manager() {
     fi
   done
 
-  if ! _desktop_dm_is_greetd; then
-    log_change "link display-manager.service to greetd.service"
-    _priv_run "$dm_link" mkdir -p -- "$(dirname "$dm_link")" || return 1
-    _priv_run "$dm_link" ln -sfn -- /lib/systemd/system/greetd.service "$dm_link" || return 1
-    link_changed=1
-  fi
+  _desktop_migrate_old_unit || return 1
 
-  if [[ "$DRY_RUN" != "1" ]]; then
-    _desktop_verify_dm || return 1
-  fi
   if ((link_changed)); then
     log_warn "reboot to reach the COSMIC login"
   fi

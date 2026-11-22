@@ -102,6 +102,19 @@ run_sudo() {
   fi
 }
 
+# sudo_read <cmd...>: run a read-only command that needs root to see its data
+# and print its output; failures print nothing. Real runs try `sudo -n` first
+# (never prompts) and then the plain command. With KCS_SKIP_SUDO=1 (test-only,
+# same switch as install.sh) sudo is not involved at all, so tests do not
+# depend on the host's sudo timestamp or secure_path.
+sudo_read() {
+  if [[ "${KCS_SKIP_SUDO:-0}" == "1" ]]; then
+    "$@" 2>/dev/null
+  else
+    sudo -n "$@" 2>/dev/null || "$@" 2>/dev/null
+  fi
+}
+
 # _needs_sudo <path>: true when the path (or its nearest existing parent)
 # is not writable by the current user.
 _needs_sudo() {

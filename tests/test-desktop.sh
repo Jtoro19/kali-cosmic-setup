@@ -157,8 +157,11 @@ check "debconf shared/default-x-display-manager is set to greetd" $?
 check "/etc/X11/default-display-manager holds /usr/sbin/greetd" $?
 [[ "$(readlink "$SYSD/display-manager.service")" == /lib/systemd/system/greetd.service ]]
 check "display-manager.service links to /lib/systemd/system/greetd.service" $?
-! grep -q -- 'autoremove' "$APT" && [[ ! -e "$FAKE_STATE/purge-state.log" ]]
-check "no gdm3 or gnome-shell installed: no purge and no simulation" $?
+[[ -s "$APT" ]] && ! grep -Eq -- '(^| )-s |purge|autoremove' "$APT" &&
+  [[ ! -e "$FAKE_STATE/purge-state.log" ]]
+check "no gdm3 or gnome-shell installed: apt-get log has no purge, simulation or autoremove" $?
+[[ ! -e "$FAKE_STATE/sudo.log" ]] || ! grep -q 'debconf-show' "$FAKE_STATE/sudo.log"
+check "the debconf read never goes through the sudo binary under KCS_SKIP_SUDO" $?
 grep -qx 'set-default graphical.target' "$SYSLOG"
 check "the default target is graphical.target" $?
 ! grep -qi 'getty' "$SYSLOG" && ! grep -qw 'mask' "$SYSLOG"
@@ -401,15 +404,48 @@ for cmd in 'systemd-sysusers cosmic-greeter.conf' 'systemd-tmpfiles --create cos
 done
 gdm_system
 FAKE_FAIL="|systemctl disable gdm3.service|" desk
-[[ "$rc" != 0 ]] && [[ ! -e "$FAKE_STATE/purge-state.log" ]] &&
-  [[ "$(readlink "$SYSD/display-manager.service")" == /lib/systemd/system/gdm3.service ]]
-check "a failing 'systemctl disable' fails the module before the link and the purge" $?
+[[ "$rc" != 0 ]] && [[ ! -e "$FAKE_STATE/purge-state.log" ]] && [[ -L "$SYSD/display-manager.service" ]]
+check "a failing 'systemctl disable' fails the module before the purge, link not missing" $?
+
+# A failure between the old unit and the greetd link never leaves no link.
+old_alias_system() {
+  reset_state
+  mkdir -p "$SYSD"
+  printf '[Unit]\nDescription=old\n' >"$SYSD/cosmic-greeter.service"
+  ln -sfn cosmic-greeter.service "$SYSD/display-manager.service"
+  echo cosmic-greeter.service >"$FAKE_STATE/enabled"
+}
+for cmd in 'debconf-set-selections' 'systemctl enable cosmic-greeter-daemon.service'; do
+  old_alias_system
+  FAKE_FAIL="|$cmd|" desk
+  [[ "$rc" != 0 && -L "$SYSD/display-manager.service" && -e "$SYSD/cosmic-greeter.service" ]]
+  check "migration: '$cmd' failing leaves the old unit and a display-manager link" $?
+done
+old_alias_system
+FAKE_NO_LN=1 desk
+[[ "$rc" != 0 && -L "$SYSD/display-manager.service" && -e "$SYSD/cosmic-greeter.service" ]]
+check "migration: the old unit stays until the greetd link exists" $?
+old_alias_system
+printf '%s\n' gdm3.service >>"$FAKE_STATE/enabled"
+FAKE_FAIL="|systemctl disable gdm3.service|" desk
+[[ "$rc" != 0 && -L "$SYSD/display-manager.service" ]]
+check "migration: a failing disable of another display manager leaves a link" $?
 
 # --- display-manager link is verified ---------------------------------------
 reset_state
 FAKE_NO_LN=1 desk
-[[ "$rc" != 0 ]] && grep -q 'display-manager.service does not resolve to greetd.service' "$WORK/out"
-check "a link that cannot be made fails with a clear message" $?
+[[ "$rc" != 0 ]] && grep -q 'display-manager.service is missing' "$WORK/out"
+check "a link that cannot be made: the message says the link is missing" $?
+reset_state
+mkdir -p "$SYSD" && ln -sfn /lib/systemd/system/other-dm.service "$SYSD/display-manager.service"
+FAKE_NO_LN=1 desk
+[[ "$rc" != 0 ]] && grep -q 'display-manager.service points to .*other-dm.service' "$WORK/out"
+check "a link that stays elsewhere: the message shows where it points" $?
+reset_state
+FAKE_APT_FAIL_UPDATE_NTH=2 desk
+[[ "$rc" != 0 ]] && grep -q "module 'desktop' failed" "$WORK/out" &&
+  [[ "$(wc -l <"$FAKE_STATE/update.count")" == 2 ]] && ! grep -q 'cosmic-epoch-monorepo' "$FAKE_STATE/apt.log"
+check "a failing apt-get update after the repo changed (force refresh) fails the module" $?
 gdm_system
 FAKE_NO_LN=1 desk
 [[ "$rc" != 0 && ! -e "$FAKE_STATE/purge-state.log" ]]
@@ -421,6 +457,8 @@ check "dry-run does not verify the link" $?
 reset_state
 printf '%s\n' xdm.service slim.service nodm.service >"$FAKE_STATE/enabled"
 desk
+[[ "$rc" == 0 ]]
+check "xdm, slim and nodm enabled: the run succeeds" $?
 for dm in xdm slim nodm; do
   grep -qx "disable $dm.service" "$FAKE_STATE/systemctl.log"
   check "enabled display manager $dm is disabled" $?

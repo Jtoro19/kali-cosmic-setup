@@ -71,6 +71,11 @@ for a in "$@"; do
       ;;
   esac
 done
+# FAKE_APT_FAIL_UPDATE_NTH=2 makes the 2nd `apt-get update` of a run fail.
+if [ "$cmd" = update ] && [ -n "${FAKE_APT_FAIL_UPDATE_NTH:-}" ]; then
+  echo x >>"$FAKE_STATE/update.count"
+  [ "$(wc -l <"$FAKE_STATE/update.count")" -eq "$FAKE_APT_FAIL_UPDATE_NTH" ] && exit 1
+fi
 if [ "$sim" = 1 ]; then
   case "$cmd" in
     purge)
@@ -148,8 +153,9 @@ EOS
   cat >"$bin/systemctl" <<'EOS'
 #!/bin/sh
 echo "$*" >>"$FAKE_STATE/systemctl.log"
-# FAKE_FAIL="|systemctl enable cosmic-greeter.service|systemd-sysusers ..." makes
-# exactly those commands fail (full command line, pipe separated).
+# FAKE_FAIL="|systemctl enable x.service|systemd-sysusers ..." makes exactly
+# those commands fail (full command line, pipe separated). Every fake logs its
+# call first and only then fails, so a failed call still shows in the logs.
 case "|${FAKE_FAIL:-}|" in *"|systemctl $*|"*) exit 1 ;; esac
 sysd="${KCS_ROOT:-}/etc/systemd/system"
 dm="$sysd/display-manager.service"
@@ -204,14 +210,14 @@ EOS
   # cosmic-greeter user in the fake user list.
   cat >"$bin/systemd-sysusers" <<'EOS'
 #!/bin/sh
-case "|${FAKE_FAIL:-}|" in *"|systemd-sysusers $*|"*) exit 1 ;; esac
 echo "$*" >>"$FAKE_STATE/sysusers.log"
+case "|${FAKE_FAIL:-}|" in *"|systemd-sysusers $*|"*) exit 1 ;; esac
 echo cosmic-greeter >>"$FAKE_STATE/users"
 EOS
   cat >"$bin/systemd-tmpfiles" <<'EOS'
 #!/bin/sh
-case "|${FAKE_FAIL:-}|" in *"|systemd-tmpfiles $*|"*) exit 1 ;; esac
 echo "$*" >>"$FAKE_STATE/tmpfiles.log"
+case "|${FAKE_FAIL:-}|" in *"|systemd-tmpfiles $*|"*) exit 1 ;; esac
 mkdir -p "${KCS_ROOT:-}/var/lib/cosmic-greeter"
 EOS
 
@@ -231,8 +237,8 @@ EOS
   # stores the display manager answer in $FAKE_STATE/debconf.
   cat >"$bin/debconf-set-selections" <<'EOS'
 #!/bin/sh
-case "|${FAKE_FAIL:-}|" in *"|debconf-set-selections|"*) exit 1 ;; esac
 echo "debconf-set-selections" >>"$FAKE_STATE/all.log"
+case "|${FAKE_FAIL:-}|" in *"|debconf-set-selections|"*) exit 1 ;; esac
 while IFS= read -r line; do
   echo "$line" >>"$FAKE_STATE/debconf.log"
   set -- $line

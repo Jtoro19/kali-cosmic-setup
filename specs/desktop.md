@@ -82,14 +82,18 @@ The four files shipped under `files/desktop/` are copied from upstream
        different value;
     3. `/etc/X11/default-display-manager` = `/usr/sbin/greetd` (backup when it
        differs);
-    4. disables any other enabled display manager (`gdm3`, `lightdm`, `sddm`,
-       `lxdm`, `ly`, `xdm`, `slim`, `nodm`);
-    5. `ln -sfn /lib/systemd/system/greetd.service
+    4. `ln -sfn /lib/systemd/system/greetd.service
        /etc/systemd/system/display-manager.service`, only when the link does
        not already resolve to `greetd.service`. A link masked to `/dev/null`
        fails the module (never unmasked);
-    6. verifies that `display-manager.service` resolves to `greetd.service`
-       and fails with a clear message if not.
+    5. verifies that `display-manager.service` resolves to `greetd.service`
+       (the error says whether the link is missing or where it points);
+    6. disables any other enabled display manager (`gdm3`, `lightdm`, `sddm`,
+       `lxdm`, `ly`, `xdm`, `slim`, `nodm`), then disables and removes (with a
+       backup) the `cosmic-greeter.service` of an earlier version of this
+       module and reloads systemd. The old unit is removed only after the
+       greetd link is verified, so a failure never leaves no
+       display-manager link.
     `getty@` units are never disabled or masked.
 11. Sets `graphical.target` as the default boot target when it is not.
 12. GDM purge (below), only after step 10 succeeded and was verified.
