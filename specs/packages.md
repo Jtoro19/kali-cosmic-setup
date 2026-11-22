@@ -173,7 +173,11 @@ they simply do not open. Both start with `--ozone-platform=x11` and with
 Decision: run them as X11 clients (XWayland), only when every `cardN` under
 `/sys/class/drm` has PCI vendor `0x1af4` and at least one exists
 (`gpu_is_virtual` in `lib/common.sh`; connector entries such as
-`card0-Virtual-1` are not cards; a mix of virtual and real GPUs is not virtual).
+`card0-Virtual-1` are not cards; a mix of virtual and real GPUs is not virtual,
+and a card whose vendor cannot be read counts as real hardware). Known
+limitation: a VM with a passed-through real GPU next to the virtio one is not
+treated as virtual, so the workaround is not applied there even if the
+compositor renders on the virtio GPU.
 
 - **Why x11 and not `--disable-gpu-compositing`**: both work; x11 keeps GPU
   rasterisation, so it is the lighter loss.
@@ -189,12 +193,19 @@ Decision: run them as X11 clients (XWayland), only when every `cardN` under
   file (verified), so the only launch path covered is the desktop entry. The
   module generates `/usr/local/share/applications/brave-browser.desktop` from
   `/usr/share/applications/brave-browser.desktop` (when it exists): the flag is
-  inserted after the executable in every `Exec=` line, everything else is kept,
-  and a marker comment line goes first. `/usr/local/share` precedes
-  `/usr/share` in `XDG_DATA_DIRS`, so the app menu, `xdg-open` and the mime
-  default (`brave-browser.desktop`, set by the mime module) use it. It is
-  compared with the installed file and rewritten only when different, so a
-  Brave update that changes its entry is picked up on the next run;
+  inserted after the executable in every `Exec=` line that starts with a plain
+  program path (an `env` or quoted `Exec=` line is left as is, with a warning;
+  Brave's own entry has none), everything else is kept, a marker comment line
+  goes first, and the main group gets `TryExec=` with Brave's executable when
+  the source has none, so if Brave is removed launchers and the MIME lookup
+  hide this copy instead of offering a dead entry. `/usr/local/share` precedes
+  `/usr/share` in the default `XDG_DATA_DIRS`, and the COSMIC session does not
+  set the variable (checked on the VM: unset for cosmic-comp, cosmic-panel and
+  cosmic-launcher), so the app menu, `xdg-open` and the mime default
+  (`brave-browser.desktop`, set by the mime module) use it. It is compared with
+  the installed file and rewritten only when different, so a Brave update that
+  changes its entry is picked up on the next run (until then the copy keeps
+  the previous metadata, which only matters if Brave changes its Exec path);
   `update-desktop-database` runs on that directory only when something changed
   (non-fatal). A `brave-browser` typed in a terminal does not read it and
   still needs the flag by hand. No `$HOME` file is written.

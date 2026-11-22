@@ -107,7 +107,11 @@ _packages_vgpu_drop() {
   real="$(rootpath "$path")"
   FILE_CHANGED=0
   if [[ -e "$real" ]] && ! grep -qF -- "$_PACKAGES_VGPU_MARKER" "$real"; then
-    log_warn "$path exists without the kali-cosmic-setup marker: leaving it alone (the virtio-gpu browser workaround is not applied through it)"
+    if [[ -n "$content" ]]; then
+      log_warn "$path exists without the kali-cosmic-setup marker: leaving it alone (the virtio-gpu browser workaround is not applied through it)"
+    else
+      log_warn "$path exists without the kali-cosmic-setup marker: not ours, leaving it alone"
+    fi
     return 0
   fi
   if [[ -n "$content" ]]; then
@@ -122,8 +126,42 @@ _packages_vgpu_drop() {
 # _packages_brave_x11_entry: print the packaged Brave desktop entry with the
 # flag after the executable of every Exec= line, behind the marker comment.
 _packages_brave_x11_entry() {
+  local src line group="" exe main_exe has_tryexec=0 skipped=0
+  src="$(rootpath "$_PACKAGES_VGPU_BRAVE_SRC")"
+  # The main group's executable, for a TryExec: if Brave is removed, launchers
+  # and the MIME lookup hide this copy instead of offering a dead entry.
+  main_exe="$(awk '/^\[/ { g = $0 } g == "[Desktop Entry]" && /^Exec=/ { sub(/^Exec=/, ""); split($0, a, " "); print a[1]; exit }' "$src")"
+  awk '/^\[/ { g = $0 } g == "[Desktop Entry]" && /^TryExec=/ { f = 1 } END { exit !f }' "$src" && has_tryexec=1
   printf '# %s: generated from %s\n' "$_PACKAGES_VGPU_MARKER" "$_PACKAGES_VGPU_BRAVE_SRC"
-  sed -E "s|^(Exec=[^[:space:]]+)|\\1 $_PACKAGES_VGPU_FLAG|" "$(rootpath "$_PACKAGES_VGPU_BRAVE_SRC")"
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$line" == \[*\] ]]; then
+      group="$line"
+      printf '%s\n' "$line"
+      if [[ "$group" == "[Desktop Entry]" ]] && ((!has_tryexec)) && _packages_plain_exe "$main_exe"; then
+        printf 'TryExec=%s\n' "$main_exe"
+      fi
+      continue
+    fi
+    if [[ "$line" == Exec=* ]]; then
+      exe="${line#Exec=}"
+      exe="${exe%% *}"
+      if _packages_plain_exe "$exe"; then
+        line="Exec=$exe $_PACKAGES_VGPU_FLAG${line#"Exec=$exe"}"
+      else
+        skipped=1
+      fi
+    fi
+    printf '%s\n' "$line"
+  done <"$src"
+  if ((skipped)); then
+    log_warn "$_PACKAGES_VGPU_BRAVE_SRC has an Exec line that does not start with a plain program path (quoted or env): left without $_PACKAGES_VGPU_FLAG"
+  fi
+}
+
+# _packages_plain_exe <word>: a program path the flag can safely follow (not
+# empty, not quoted, not `env` or a VAR=value assignment).
+_packages_plain_exe() {
+  [[ -n "$1" && "$1" != \"* && "$1" != env && "$1" != *=* ]]
 }
 
 _packages_browsers_vgpu() {

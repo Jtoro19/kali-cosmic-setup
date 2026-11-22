@@ -431,8 +431,10 @@ check "virtio: the chromium.d drop-in is written (0644, marker, flag), chromium 
   grep -qx 'Exec=/usr/bin/brave-browser-stable --ozone-platform=x11 --incognito' "$KCS_ROOT$BDESK" &&
   [[ "$(head -n1 "$KCS_ROOT$BDESK")" == '# kali-cosmic-setup: virtio-gpu browser workaround'* ]]
 check "virtio: the Brave desktop entry is generated with the flag in every Exec line and a marker first" $?
-diff <(grep -v -e '^Exec=' -e '^# kali-cosmic-setup' "$KCS_ROOT$BDESK") <(grep -v '^Exec=' "$KCS_ROOT$BSRC") >/dev/null
+diff <(grep -v -e '^Exec=' -e '^# kali-cosmic-setup' -e '^TryExec=' "$KCS_ROOT$BDESK") <(grep -v '^Exec=' "$KCS_ROOT$BSRC") >/dev/null
 check "virtio: every other line of the desktop entry is kept" $?
+[[ "$(grep -c '^TryExec=' "$KCS_ROOT$BDESK")" == 1 && "$(sed -n 3p "$KCS_ROOT$BDESK")" == 'TryExec=/usr/bin/brave-browser-stable' ]]
+check "virtio: the generated entry gets one TryExec in its main group (hidden if Brave is removed)" $?
 before="$(snap)"
 pk
 [[ "$rc" == 0 && "$(snap)" == "$before" ]] && grep -q 'total changes: 0' "$WORK/out"
@@ -479,6 +481,14 @@ set_gpus 0x1af4
 pk
 [[ "$rc" == 0 && -f "$KCS_ROOT$CHR" && ! -e "$KCS_ROOT$BDESK" ]]
 check "virtio: without /usr/share/applications/brave-browser.desktop only the drop-in is written" $?
+reset_state
+set_gpus 0x1af4
+write_brave_src
+printf '[Desktop Action env]\nName=Env\nExec=env FOO=1 /usr/bin/brave-browser-stable\n[Desktop Action quoted]\nName=Quoted\nExec="/opt/my brave/brave"\n' >>"$KCS_ROOT$BSRC"
+pk
+[[ "$rc" == 0 ]] && grep -qx 'Exec=env FOO=1 /usr/bin/brave-browser-stable' "$KCS_ROOT$BDESK" &&
+  grep -qxF 'Exec="/opt/my brave/brave"' "$KCS_ROOT$BDESK" && grep -q '\[warn\].*Exec line' "$WORK/out"
+check "virtio: an env or quoted Exec line is left as is, with a warning" $?
 
 # Dry-run writes nothing.
 reset_state

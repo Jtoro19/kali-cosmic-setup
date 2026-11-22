@@ -827,13 +827,17 @@ detect_gpu_vendors() {
 # gpu_is_virtual: true only when /sys/class/drm has at least one card (the
 # cardN entries; connectors such as card0-Virtual-1 are not cards) and every
 # card's PCI vendor is 0x1af4 (virtio, the GPU of a QEMU/KVM guest). False for
-# real hardware, for a mix of virtual and real GPUs, and when no card is found.
+# real hardware, for a mix of virtual and real GPUs (including a VM with a
+# passed-through GPU), for a card with an unreadable vendor, and when no card
+# is found.
 gpu_is_virtual() {
   local d f id n=0
   for d in "$(rootpath /sys/class/drm)"/card*; do
     [[ "${d##*/}" =~ ^card[0-9]+$ ]] || continue
     f="$d/device/vendor"
-    [[ -r "$f" ]] || continue
+    # A card whose vendor cannot be read is treated as real hardware: the
+    # workarounds keyed on this must never reach a real GPU.
+    [[ -r "$f" ]] || return 1
     id="$(<"$f")"
     id="${id,,}"
     [[ "${id#0x}" == 1af4 ]] || return 1

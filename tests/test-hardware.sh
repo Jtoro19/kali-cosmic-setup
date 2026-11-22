@@ -114,6 +114,11 @@ check "virtual: a connector entry (card0-Virtual-1) is not a card" $?
 rm -rf -- "$WORK/root/sys"
 ! KCS_ROOT="$WORK/root" gpu_is_virtual
 check "virtual: no /sys/class/drm is not virtual" $?
+rm -rf -- "$WORK/root/sys"
+mkdir -p "$WORK/root/sys/class/drm/card0/device" "$WORK/root/sys/class/drm/card1/device"
+echo 0x1af4 >"$WORK/root/sys/class/drm/card0/device/vendor"
+! KCS_ROOT="$WORK/root" gpu_is_virtual
+check "virtual: a card whose vendor cannot be read counts as real hardware" $?
 
 if ((failures > 0)); then
   printf '%d check(s) failed\n' "$failures"
