@@ -26,8 +26,19 @@ Per-module details go in `specs/<module>.md`.
   fix and repeat until it passes. After reboots, check the greeter and the
   desktop with `virsh screenshot` plus systemctl and journal checks.
 - Milestone check: push, revert the VM to `fresh`, `git clone` from GitHub on
-  the VM and run `install.sh` as a user would. The owner sees the result after
-  each module before the next one starts.
+  the VM and run `install.sh` as a user would.
+- Autonomous mode (owner decision, 2026-11-22): every remaining module is built
+  and tested on the VM without asking the owner or waiting for approval
+  between modules. Ambiguities are resolved by the option most consistent with
+  BRIEF.md and this plan, recorded in the module spec. A module that cannot be
+  done reliably is stopped and documented; the rest continue. Review consents
+  only the owner can give do not block: an independent review by a separate
+  agent replaces them and every pending consent is listed in the final report.
+- Final check: revert to `fresh`, clone from GitHub, `./install.sh --all
+  --keyboard us:altgr-intl`, reboot, verify the Definition of done with
+  screenshots and checks, run `--all --keyboard keep` again and confirm zero
+  changes, and test the interactive keyboard menu once with scripted input
+  (us altgr-intl).
 - No secrets in the repo or logs; sshd on the VM is for testing only.
 - Repo: https://github.com/Jtoro19/kali-cosmic-setup (public, created by the
   owner), branch main.
