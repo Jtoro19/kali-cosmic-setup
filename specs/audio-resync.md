@@ -17,13 +17,19 @@ repository. Facts: PipeWire 1.6.9 on the Kali VM, COSMIC 1.11.0
 
 ## Files and packages touched
 
-- `~/.local/bin/cosmic-audio-resync` (0755): waits `RESYNC_DELAY` seconds
-  (default 5), kills `cosmic-settings-daemon`, starts it again with `setsid`
-  only when the session did not respawn it, then kills `cosmic-panel` (the
-  session respawns the panel together with its applets; killing only the
-  sound applet does not bring it back).
+- `~/.local/bin/cosmic-audio-resync` (0755): exits at once unless
+  `XDG_CURRENT_DESKTOP` contains `COSMIC`; waits `RESYNC_DELAY` seconds (default
+  5); polls (bounded, `RESYNC_WAIT` ticks of `RESYNC_TICK` seconds, default 30 x 1 s)
+  until `cosmic-settings-daemon` and `cosmic-panel` run; kills the daemon and
+  waits `RESYNC_RESPAWN` ticks (default 5) for the session to respawn it, and
+  starts it with `setsid` only when none came (see decision 5); then kills
+  `cosmic-panel` and checks it respawned within the same bound, logging when it
+  did not (the session respawns the panel together with its applets; killing
+  only the sound applet does not bring it back). Never fails the login: it
+  always exits 0.
 - `~/.config/autostart/cosmic-audio-resync.desktop`, rendered from
-  `files/audio-resync/cosmic-audio-resync.desktop.in` (`@HOME@`).
+  `files/audio-resync/cosmic-audio-resync.desktop.in` (`@HOME@`), with
+  `OnlyShowIn=COSMIC;` so no other desktop runs it.
 - Migration: `~/.local/bin/fix-cosmic-audio.sh` and
   `~/.config/autostart/fix-cosmic-audio.desktop` (hand-made versions of the
   same workaround) are backed up (`.bak.<timestamp>`) and removed.
@@ -49,7 +55,23 @@ repository. Facts: PipeWire 1.6.9 on the Kali VM, COSMIC 1.11.0
    warning, never written through sudo, never removed.
 3. **Legacy cleanup kept** (harmless) even though a fresh Kali install never had
    the hand-made files.
-4. **Possible upstream fix.** The bug may be fixed in a later COSMIC; remove the
+4. **COSMIC only.** The entry has `OnlyShowIn=COSMIC;` and the script exits
+   unless `XDG_CURRENT_DESKTOP` contains `COSMIC`. Checked on the VM:
+   `systemd-xdg-autostart-generator` turns `OnlyShowIn` into
+   `ExecCondition=systemd-xdg-autostart-condition "COSMIC" ""`, which succeeds
+   with `XDG_CURRENT_DESKTOP=COSMIC` and fails with `GNOME`.
+5. **Wait, do not assume (M10b review W2).** The script polls (bounded) for the
+   daemon and the panel before killing anything, and checks the respawns.
+   Evidence on the Kali VM (COSMIC 1.11.0): `cosmic-session` journals
+   "restarted process ... cosmic-panel" after the panel is killed, but it does
+   **not** respawn `cosmic-settings-daemon` (after `pkill` nothing came back in
+   20 s; `cosmic-osd` then logged "failed to connect to cosmic-settings's
+   varlink service"). So the daemon is started by hand only when no respawn
+   came within `RESYNC_RESPAWN` ticks, which leaves a session that does
+   supervise it alone, and the script never leaves the desktop without a
+   daemon. A daemon that never started (login failure) is not started either:
+   the script logs and exits.
+6. **Possible upstream fix.** The bug may be fixed in a later COSMIC; remove the
    module then (see Revert).
 
 ## Hardware detection
@@ -68,7 +90,10 @@ when the legacy files exist. A second run reports `total changes: 0`.
 rm ~/.local/bin/cosmic-audio-resync ~/.config/autostart/cosmic-audio-resync.desktop
 ```
 
-(restore `.bak.<timestamp>` files if a legacy file was migrated).
+If a legacy hand-made version was migrated, also restore the backed-up
+`~/.local/bin/fix-cosmic-audio.sh.bak.<timestamp>` and
+`~/.config/autostart/fix-cosmic-audio.desktop.bak.<timestamp>` (rename them back
+without the `.bak.<timestamp>` suffix).
 
 ## Verification
 
@@ -77,5 +102,5 @@ rm ~/.local/bin/cosmic-audio-resync ~/.config/autostart/cosmic-audio-resync.desk
 ./install.sh --only audio-resync          # then again: "total changes: 0"
 RESYNC_DELAY=0 ~/.local/bin/cosmic-audio-resync   # in a COSMIC session
 pgrep -x cosmic-panel                     # the panel is back a few seconds later
-tests/test-audio-resync.sh
+tests/test-audio-resync.sh   # includes an execution test with fake pgrep/pkill/setsid
 ```

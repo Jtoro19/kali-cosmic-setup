@@ -5,14 +5,30 @@
 # audio stack restarts) cosmic-settings-daemon does not pick up the PipeWire
 # devices, so the panel applet and Settings > Sound show "No device selected"
 # and their volume sliders do nothing, while PipeWire itself works.
-# Restarting the daemon and then the panel resyncs them.
+# Restarting the daemon and then the panel resyncs them. cosmic-session
+# respawns the panel with its applets. It does not respawn the daemon on
+# COSMIC 1.11 (checked on the Kali VM): the script waits a few seconds for a
+# respawn first, so a session that does supervise it is left alone, and starts
+# the daemon itself only when none came.
 #
-# Run at login by ~/.config/autostart/cosmic-audio-resync.desktop. Run it by
-# hand (with RESYNC_DELAY=0) after restarting PipeWire.
+# Run at login by ~/.config/autostart/cosmic-audio-resync.desktop (COSMIC only).
+# Run it by hand (with RESYNC_DELAY=0) after restarting PipeWire.
+#
+# Tunables (environment): RESYNC_DELAY seconds to wait first (default 5),
+# RESYNC_WAIT ticks to wait for a process to appear at login (default 30),
+# RESYNC_RESPAWN ticks to wait for the session to respawn one (default 5),
+# RESYNC_TICK seconds per tick (default 1).
 set -u
 
+# Only inside a COSMIC session: elsewhere there is no daemon to resync.
+[[ ${XDG_CURRENT_DESKTOP:-} == *COSMIC* ]] || exit 0
+
 delay="${RESYNC_DELAY:-5}"
+limit="${RESYNC_WAIT:-30}"
+respawn="${RESYNC_RESPAWN:-5}"
+tick="${RESYNC_TICK:-1}"
 daemon="cosmic-settings-daemon"
+uid="$(id -u)"
 
 log() { printf 'cosmic-audio-resync: %s\n' "$*" >&2; }
 
@@ -21,20 +37,59 @@ if ! command -v "$daemon" >/dev/null 2>&1; then
   exit 0
 fi
 
-# Give the session time to start PipeWire and the daemon first.
+# The daemon's process name is longer than 15 characters: match the command line.
+daemon_re="^(/usr/bin/)?$daemon( |\$)"
+
+# pids <pgrep args...>: the matching process ids of this user, one line, sorted.
+pids() { pgrep -u "$uid" "$@" 2>/dev/null | sort | tr '\n' ' '; }
+
+# wait_for <ticks> <old-pids> <pgrep args...>: poll (bounded) until a process
+# that is not in <old-pids> matches, which is the respawn. An empty <old-pids>
+# accepts any match. True when found.
+wait_for() {
+  local max="$1" old="$2" now p i found
+  shift 2
+  for ((i = 0; i <= max; i++)); do
+    now="$(pids "$@")"
+    found=0
+    for p in $now; do
+      [[ " $old " == *" $p "* ]] || found=1
+    done
+    ((found)) && return 0
+    ((i < max)) && sleep "$tick"
+  done
+  return 1
+}
+
+# Give the session time to start PipeWire, the daemon and the panel first.
 sleep "$delay"
 
-# The process name is longer than 15 characters, so match the command line.
-pkill -u "$(id -u)" -f "^(/usr/bin/)?$daemon( |$)" || true
-sleep 2
-
-# Start it again only if the session did not already respawn it.
-if ! pgrep -u "$(id -u)" -f "^(/usr/bin/)?$daemon( |$)" >/dev/null 2>&1; then
-  setsid -f "$daemon" >/dev/null 2>&1 </dev/null
-  sleep 2
+if ! wait_for "$limit" "" -f "$daemon_re"; then
+  log "$daemon is not running after $limit checks; nothing to do"
+  exit 0
+fi
+if ! wait_for "$limit" "" -x cosmic-panel; then
+  log "cosmic-panel is not running after $limit checks; nothing to do"
+  exit 0
 fi
 
-# cosmic-session respawns the panel together with its applets. Killing only
-# the sound applet is not enough: the panel does not bring it back.
-pkill -u "$(id -u)" -x cosmic-panel || true
+# Restart the daemon. A session that supervises it brings it back; otherwise
+# start it, with its own session so it outlives this script.
+old="$(pids -f "$daemon_re")"
+pkill -u "$uid" -f "$daemon_re" || true
+if ! wait_for "$respawn" "$old" -f "$daemon_re"; then
+  log "the session did not restart $daemon within $respawn checks; starting it"
+  setsid -f "$daemon" >/dev/null 2>&1 </dev/null
+  if ! wait_for "$respawn" "" -f "$daemon_re"; then
+    log "$daemon did not start"
+  fi
+fi
+
+# Then the panel: the session respawns it together with its applets. Killing
+# only the sound applet is not enough, the panel does not bring it back.
+old="$(pids -x cosmic-panel)"
+pkill -u "$uid" -x cosmic-panel || true
+if ! wait_for "$respawn" "$old" -x cosmic-panel; then
+  log "cosmic-panel did not come back within $respawn checks"
+fi
 exit 0

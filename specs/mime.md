@@ -73,7 +73,7 @@ different value is replaced, a missing key is added. A second run reports
 
 ## Revert
 
-Restore `~/.config/mimeapps.list.bak.<timestamp>`, or delete the seven lines.
+Restore `~/.config/mimeapps.list.bak.<timestamp>`, or delete the lines this module added (the pairs in the table above).
 
 ## Verification
 

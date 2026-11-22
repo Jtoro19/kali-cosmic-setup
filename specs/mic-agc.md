@@ -44,7 +44,15 @@ quirks). The regex differs from eos for the apps of this setup (decision 1).
    and `wireplumber`. `pulse.rules` is read only by pipewire-pulse, so the port
    restarts just that service: it reconnects the PulseAudio-protocol apps and
    leaves the graph and the COSMIC sound applet's device list alone (the
-   audio-resync workaround is not needed after it). The check uses
+   audio-resync workaround is not needed after it). Verified on the Kali VM
+   (COSMIC 1.11.0, M10b review W3), in a live session: `cosmic-settings-daemon`
+   is a native PipeWire client (listed by `wpctl status`), not a PulseAudio one;
+   after `systemctl --user restart pipewire-pulse` it stayed connected, and the
+   volume-up key (handled by the daemon) still moved the default sink from 50%
+   to 55% with the COSMIC volume OSD showing 55%
+   (`odd/evidence/audio-resync-w3-volume-key-after-pulse-restart.png`).
+   Not observed: the sound applet popup itself (pointer clicks through ydotool
+   did not reach the panel on this VM); the daemon, the keys and the OSD were. The check uses
    `user_systemd_ready`, so it also works over SSH (`XDG_RUNTIME_DIR` is set to
    `/run/user/<uid>`); a missing user manager means "applies at next login".
 4. **Property to match.** `application.process.binary`, as in eos. It is what

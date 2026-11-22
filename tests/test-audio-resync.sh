@@ -22,6 +22,7 @@ OLD_SH="$HOME_DIR/.local/bin/fix-cosmic-audio.sh"
 OLD_DESKTOP="$HOME_DIR/.config/autostart/fix-cosmic-audio.desktop"
 
 failures=0
+rg_n() { grep -c "^$1" "$FAKE_STATE/proc.log" 2>/dev/null || true; }
 check() { # check <description> <status>
   if (($2 == 0)); then
     printf 'ok   - %s\n' "$1"
@@ -53,10 +54,98 @@ grep -E '^audio-resync +no ' <<<"$out" >/dev/null
 check "metadata: audio-resync is a default (not opt-in) module" $?
 bash -n "$SRC/cosmic-audio-resync"
 check "the shipped script parses" $?
-grep -q 'pkill -u "$(id -u)" -x cosmic-panel' "$SRC/cosmic-audio-resync" && grep -q 'cosmic-settings-daemon' "$SRC/cosmic-audio-resync"
+grep -q 'cosmic-settings-daemon' "$SRC/cosmic-audio-resync" && grep -q 'cosmic-panel' "$SRC/cosmic-audio-resync"
 check "the script restarts cosmic-settings-daemon and then the panel" $?
+grep -qx 'OnlyShowIn=COSMIC;' "$SRC/cosmic-audio-resync.desktop.in"
+check "the autostart entry is limited to COSMIC (OnlyShowIn=COSMIC;)" $?
 ! grep -rqi 'eos' "$SRC"
 check "no reference-repo name is left in the shipped files" $?
+
+
+# --- execution of the shipped script with fake pkill/pgrep/setsid -----------------------------
+# The fakes keep one pid file per process under $FAKE_STATE/procs; pkill removes the
+# pids and, like cosmic-session, respawns the process with a new pid unless
+# FAKE_NO_RESPAWN_<DAEMON|PANEL> is set. Every call is logged to proc.log.
+run_script_fakes() {
+  local b="$WORK/fakebin"
+  rm -rf -- "$b" "$FAKE_STATE/procs" "$FAKE_STATE/proc.log"
+  mkdir -p "$b" "$FAKE_STATE/procs"
+  cat >"$b/pgrep" <<'EOS'
+#!/bin/sh
+echo "pgrep $*" >>"$FAKE_STATE/proc.log"
+case "$*" in *cosmic-settings-daemon*) k=daemon ;; *cosmic-panel*) k=panel ;; *) exit 1 ;; esac
+[ -s "$FAKE_STATE/procs/$k" ] || exit 1
+cat "$FAKE_STATE/procs/$k"
+EOS
+  cat >"$b/pkill" <<'EOS'
+#!/bin/sh
+echo "pkill $*" >>"$FAKE_STATE/proc.log"
+case "$*" in *cosmic-settings-daemon*) k=daemon ;; *cosmic-panel*) k=panel ;; *) exit 1 ;; esac
+[ -s "$FAKE_STATE/procs/$k" ] || exit 1
+: >"$FAKE_STATE/procs/$k"
+eval "norespawn=\${FAKE_NO_RESPAWN_$(echo "$k" | tr a-z A-Z):-}"
+[ -n "$norespawn" ] || echo "$(( $(cat "$FAKE_STATE/pidseq" 2>/dev/null || echo 1000) + 1 ))" | tee "$FAKE_STATE/pidseq" >"$FAKE_STATE/procs/$k"
+EOS
+  cat >"$b/setsid" <<'EOS'
+#!/bin/sh
+echo "setsid $*" >>"$FAKE_STATE/proc.log"
+EOS
+  printf '#!/bin/sh\nexit 0\n' >"$b/cosmic-settings-daemon"
+  cat >"$b/sleep" <<'EOS'
+#!/bin/sh
+echo "sleep $*" >>"$FAKE_STATE/proc.log"
+EOS
+  chmod +x "$b"/*
+  echo 100 >"$FAKE_STATE/procs/daemon"
+  echo 200 >"$FAKE_STATE/procs/panel"
+}
+# rs <env...>: run the shipped script in the fake environment.
+rs() {
+  rc=0
+  env "$@" PATH="$WORK/fakebin:$PATH" RESYNC_DELAY=0 RESYNC_TICK=0 RESYNC_WAIT=3 RESYNC_RESPAWN=2 "$SRC/cosmic-audio-resync" >"$WORK/rs.out" 2>&1 </dev/null || rc=$?
+}
+reset_state
+run_script_fakes
+rs XDG_CURRENT_DESKTOP=COSMIC
+[[ "$rc" == 0 ]] && [[ "$(rg_n pkill)" == 2 ]]
+check "script: in a COSMIC session it restarts the daemon and the panel (two pkill calls), exit 0" $?
+[[ "$(grep -n '^pkill' "$FAKE_STATE/proc.log" | head -n 1)" == *cosmic-settings-daemon* && "$(grep '^pkill' "$FAKE_STATE/proc.log" | tail -n 1)" == *cosmic-panel* ]]
+check "script: the daemon is restarted first, then the panel" $?
+[[ "$(rg_n setsid)" == 0 ]] && [[ ! -s "$WORK/rs.out" ]]
+check "script: a daemon the session respawns is not started by hand; nothing is logged when all respawn" $?
+grep -q '^sleep 0$' "$FAKE_STATE/proc.log"
+check "script: RESYNC_DELAY=0 means an immediate start (sleep 0)" $?
+run_script_fakes
+rs XDG_CURRENT_DESKTOP=GNOME
+[[ "$rc" == 0 && ! -s "$FAKE_STATE/proc.log" ]]
+check "script: outside COSMIC it exits 0 before touching any process" $?
+run_script_fakes
+rs XDG_CURRENT_DESKTOP=
+[[ "$rc" == 0 && ! -s "$FAKE_STATE/proc.log" ]]
+check "script: with no XDG_CURRENT_DESKTOP it exits 0 before touching any process" $?
+run_script_fakes
+rs XDG_CURRENT_DESKTOP=pop:COSMIC
+[[ "$rc" == 0 ]] && [[ "$(rg_n pkill)" == 2 ]]
+check "script: a colon separated COSMIC value is accepted" $?
+run_script_fakes
+: >"$FAKE_STATE/procs/daemon"
+rs XDG_CURRENT_DESKTOP=COSMIC
+[[ "$rc" == 0 && "$(rg_n pkill)" == 0 && "$(rg_n setsid)" == 0 ]] && grep -q 'not running' "$WORK/rs.out" && [[ "$(rg_n pgrep)" -le 6 ]]
+check "script: a daemon that never appears is waited for a bounded time, then nothing is killed or started" $?
+run_script_fakes
+: >"$FAKE_STATE/procs/panel"
+rs XDG_CURRENT_DESKTOP=COSMIC
+[[ "$rc" == 0 && "$(rg_n pkill)" == 0 ]] && grep -q 'cosmic-panel is not running' "$WORK/rs.out"
+check "script: no panel at all means no restart (bounded wait, logged)" $?
+run_script_fakes
+rs XDG_CURRENT_DESKTOP=COSMIC FAKE_NO_RESPAWN_PANEL=1
+[[ "$rc" == 0 ]] && grep -q 'cosmic-panel did not come back' "$WORK/rs.out" && [[ "$(rg_n setsid)" == 0 ]]
+check "script: a panel that does not respawn within the bound is logged, never started by hand, exit 0" $?
+run_script_fakes
+rs XDG_CURRENT_DESKTOP=COSMIC FAKE_NO_RESPAWN_DAEMON=1
+[[ "$rc" == 0 && "$(rg_n pkill)" == 2 && "$(rg_n setsid)" == 1 ]] && grep -q '^setsid -f cosmic-settings-daemon' "$FAKE_STATE/proc.log" &&
+  grep -q 'starting it' "$WORK/rs.out" && grep -q 'did not start' "$WORK/rs.out"
+check "script: a daemon the session does not respawn is started once by the script (COSMIC 1.11), then the panel is restarted; a daemon that still does not start is logged" $?
 
 # --- dry-run --------------------------------------------------------------------------------
 reset_state
