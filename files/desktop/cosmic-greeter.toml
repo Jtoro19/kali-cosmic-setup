@@ -1,7 +1,10 @@
 # Source: pop-os/cosmic-greeter, tag epoch-1.11.0 (greetd config for COSMIC).
-# Changes: none. Debian's own /etc/greetd/config.toml is left untouched.
+# Changes: vt = 7 instead of upstream "1". Debian's greetd.service conflicts
+# with getty@tty7 (not tty1), so the greeter runs on VT7 and getty@tty1 stays
+# free for text-console recovery. Debian's own /etc/greetd/config.toml is left
+# untouched.
 [terminal]
-vt = "1"
+vt = 7
 
 [general]
 service = "cosmic-greeter"

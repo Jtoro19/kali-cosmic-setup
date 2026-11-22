@@ -9,6 +9,12 @@ Per-module details go in `specs/<module>.md`.
 - No test machine is reachable from the development machine. The owner clones
   the public repo on a Kali KVM virtual machine (virtio GPU) and runs
   `./install.sh` there, then reports results.
+- Test baseline (owner finding, 2026-11-22): a Kali "default tools" install,
+  i.e. tasksel with no desktop selected but the default tool metapackages
+  (`kali-linux-default`). It still ships `gdm3` 50.2 and `gnome-shell` 50.4,
+  with `/etc/X11/default-display-manager` = `/usr/sbin/gdm3`. The desktop
+  module makes Debian's `greetd.service` the display manager and purges
+  `gdm3` and `gnome-shell` under guards (see `specs/desktop.md`).
 - Locally, verification is limited to shellcheck, `tests/run-tests.sh` (fake
   sudo) and `--dry-run`. No real changes are applied on the development
   machine.
@@ -54,7 +60,7 @@ Tentative order (dependencies first, keyboard late):
 
 | Module | Status | Kali implementation |
 |---|---|---|
-| desktop | port | community repo with key and pin, `greetd`, session base: xwayland, pipewire, pipewire-pulse, wireplumber, bluez, network-manager, power-profiles-daemon, gnome-keyring, xdg-user-dirs. No cups, avahi or firewalld. pacman-conf dependency removed. |
+| desktop | port | community repo with key and pin, `greetd` as the display manager (Debian's `greetd.service` plus a drop-in for the COSMIC config, debconf and default file switched from gdm3), GDM and GNOME Shell purged only after the switch and only when no `kali-*` package would go, session base: xwayland, pipewire, pipewire-pulse, wireplumber, bluez, network-manager, power-profiles-daemon, gnome-keyring, xdg-user-dirs. No cups, avahi or firewalld. pacman-conf dependency removed. |
 | locale | port | `locales`, en_US.UTF-8 plus es_CO formats, `/etc/default/locale` via `update-locale`. |
 | drivers | port | amd64-microcode or intel-microcode, mesa-vulkan-drivers, mesa-va-drivers, intel-media-va-driver. No i386. AMD must be handled correctly for real hardware (owner host: RX 7900 XTX), virtio GPU in the test VM. NVIDIA: warn only and point to Kali's nvidia-driver. |
 | packages | port | core everyday tools from Kali, Brave from its vendor repo, PeaZip from its upstream .deb with SHA256 check. |
@@ -141,3 +147,14 @@ packages-vmware, packages-printing, packages-office, wacom, kvm.
    PATH (use absolute paths), greeter user name and home.
 6. Each real check costs the owner a run on Kali; maximize fake-sudo tests and
    dry-run coverage first.
+
+## Notes
+
+- 2026-11-22: owner finding on a real Kali install: "no desktop" with the
+  default tools still ships GDM (gdm3 50.2) and GNOME Shell (50.4), and
+  `/etc/X11/default-display-manager` is `/usr/sbin/gdm3`. `kali-linux-default`
+  does not depend on them and `apt-get -s purge gdm3 gnome-shell` removes only
+  `gdm3 gnome-browser-connector gnome-session gnome-shell`. The first desktop
+  module (a custom `cosmic-greeter.service` alias) was replaced: Debian's
+  greetd postinst relinks `display-manager.service` on every configure. The
+  module now uses `greetd.service` with a drop-in and purges GDM under guards.

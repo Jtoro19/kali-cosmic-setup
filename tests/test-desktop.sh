@@ -40,9 +40,15 @@ reset_state() {
 desk() {
   rm -f -- "${FAKE_STATE:?}"/*.log
   rc=0
+  # DISPLAY, WAYLAND_DISPLAY and XDG_SESSION_TYPE are pinned so the result does
+  # not depend on the session running the tests (T_DISPLAY / T_SESSION override).
   PATH="$WORK/bin:$PATH" KCS_SKIP_SUDO=1 KCS_SKIP_OS_CHECK=1 XDG_CACHE_HOME="$WORK/cache" \
+    DISPLAY="${T_DISPLAY:-}" WAYLAND_DISPLAY="" XDG_SESSION_TYPE="${T_SESSION:-}" \
     "$REPO_ROOT/install.sh" --only desktop "$@" >"$WORK/out" 2>&1 </dev/null || rc=$?
 }
+
+# real_apt: the apt-get calls that are not simulations (-s).
+real_apt() { grep -Ev -- '(^| )-s ' "$FAKE_STATE/apt.log"; }
 
 SYSD="$KCS_ROOT/etc/systemd/system"
 mutating='^(enable|disable|set-default|daemon-reload)'
@@ -62,12 +68,14 @@ for what in 'key /etc/apt/keyrings/debian-cosmic.gpg' \
   '/etc/apt/preferences.d/debian-cosmic' \
   'install packages: .*greetd' \
   'cosmic-epoch-monorepo' \
-  '/etc/systemd/system/cosmic-greeter.service' \
+  '/etc/systemd/system/greetd.service.d/cosmic-greeter.conf' \
   '/etc/systemd/system/cosmic-greeter-daemon.service' \
   '/etc/greetd/cosmic-greeter.toml' \
   '/etc/pam.d/cosmic-greeter' \
   'systemd-sysusers cosmic-greeter.conf' \
-  'systemctl enable cosmic-greeter.service' \
+  'debconf-set-selections' \
+  '/etc/X11/default-display-manager' \
+  'ln -sfn -- /lib/systemd/system/greetd.service' \
   'systemctl enable cosmic-greeter-daemon.service' \
   'systemctl set-default graphical.target'; do
   grep -q -- "$what" "$WORK/out"
@@ -129,31 +137,45 @@ check "no cups, avahi, firewalld, packagekit, flatpak or sshd" $?
 check "sysusers and tmpfiles run when the cosmic-greeter user is missing" $?
 files_ok=0
 for pair in cosmic-greeter-daemon.service:/etc/systemd/system/cosmic-greeter-daemon.service \
-  cosmic-greeter.service:/etc/systemd/system/cosmic-greeter.service \
+  greetd-cosmic.conf:/etc/systemd/system/greetd.service.d/cosmic-greeter.conf \
   cosmic-greeter.toml:/etc/greetd/cosmic-greeter.toml \
   cosmic-greeter.pam:/etc/pam.d/cosmic-greeter; do
   cmp -s "$REPO_ROOT/files/desktop/${pair%%:*}" "$KCS_ROOT${pair#*:}" || files_ok=1
 done
-check "the four shipped files are installed unchanged" $files_ok
+check "the four shipped files are installed unchanged (drop-in under greetd.service.d)" $files_ok
 SYSLOG="$FAKE_STATE/systemctl.log"
 [[ "$(grep -c '^daemon-reload' "$SYSLOG")" == 1 ]]
 check "daemon-reload runs once, after the unit files changed" $?
-grep -qx 'enable cosmic-greeter.service' "$SYSLOG" && grep -qx 'enable cosmic-greeter-daemon.service' "$SYSLOG"
-check "cosmic-greeter and its daemon are enabled" $?
+grep -qx 'enable cosmic-greeter-daemon.service' "$SYSLOG" && ! grep -qx 'enable cosmic-greeter.service' "$SYSLOG"
+check "the greeter daemon is enabled, the retired cosmic-greeter.service is not" $?
+[[ ! -e "$SYSD/cosmic-greeter.service" && ! -e "$REPO_ROOT/files/desktop/cosmic-greeter.service" ]]
+check "no cosmic-greeter.service alias is installed or shipped" $?
+[[ "$(cat "$FAKE_STATE/debconf" 2>/dev/null)" == greetd ]] &&
+  grep -qx 'greetd shared/default-x-display-manager select greetd' "$FAKE_STATE/debconf.log"
+check "debconf shared/default-x-display-manager is set to greetd" $?
+[[ "$(cat "$KCS_ROOT/etc/X11/default-display-manager")" == /usr/sbin/greetd ]]
+check "/etc/X11/default-display-manager holds /usr/sbin/greetd" $?
+[[ "$(readlink "$SYSD/display-manager.service")" == /lib/systemd/system/greetd.service ]]
+check "display-manager.service links to /lib/systemd/system/greetd.service" $?
+! grep -q -- 'autoremove' "$APT" && [[ ! -e "$FAKE_STATE/purge-state.log" ]]
+check "no gdm3 or gnome-shell installed: no purge and no simulation" $?
 grep -qx 'set-default graphical.target' "$SYSLOG"
 check "the default target is graphical.target" $?
-[[ "$(readlink -f "$SYSD/display-manager.service")" == */cosmic-greeter.service ]]
-check "display-manager.service resolves to cosmic-greeter.service" $?
 ! grep -qi 'getty' "$SYSLOG" && ! grep -qw 'mask' "$SYSLOG"
 check "getty units are never touched and nothing is masked" $?
 ! grep -Eqi '^[^#]*systemctl[^#]*(disable|mask)[^#]*getty' "$REPO_ROOT/modules/06-desktop.sh"
 check "the module source never disables or masks getty" $?
 ! grep -qw 'mask' "$REPO_ROOT/modules/06-desktop.sh"
 check "the module source never masks any unit" $?
-grep -q 'ExecStart=/usr/sbin/greetd --config /etc/greetd/cosmic-greeter.toml' "$REPO_ROOT/files/desktop/cosmic-greeter.service" &&
-  grep -qx 'Alias=display-manager.service' "$REPO_ROOT/files/desktop/cosmic-greeter.service" &&
-  head -n1 "$REPO_ROOT/files/desktop/cosmic-greeter.pam" | grep -qx '#%PAM-1.0'
-check "shipped files: absolute greetd path, active Alias, PAM header first" $?
+DROPIN="$REPO_ROOT/files/desktop/greetd-cosmic.conf"
+grep -qx 'Wants=cosmic-greeter-daemon.service' "$DROPIN" &&
+  grep -qx 'After=cosmic-greeter-daemon.service' "$DROPIN" &&
+  [[ "$(grep -n '^ExecStart=$' "$DROPIN" | cut -d: -f1)" -lt "$(grep -n '^ExecStart=/usr/sbin/greetd --config /etc/greetd/cosmic-greeter.toml$' "$DROPIN" | cut -d: -f1)" ]] &&
+  ! grep -q '^\[Install\]' "$DROPIN" &&
+  head -n1 "$REPO_ROOT/files/desktop/cosmic-greeter.pam" | grep -qx '#%PAM-1.0' &&
+  grep -qx 'vt = 7' "$REPO_ROOT/files/desktop/cosmic-greeter.toml" &&
+  grep -qx 'service = "cosmic-greeter"' "$REPO_ROOT/files/desktop/cosmic-greeter.toml"
+check "shipped files: drop-in clears then sets ExecStart, vt 7, PAM header first" $?
 
 # --- second run changes nothing --------------------------------------------
 desk
@@ -177,30 +199,188 @@ cmp -s "$REPO_ROOT/files/desktop/cosmic-greeter.pam" "$KCS_ROOT/etc/pam.d/cosmic
 check "a different existing file is backed up and replaced" $?
 ! grep -q '^daemon-reload' "$SYSLOG"
 check "daemon-reload is skipped when no unit file changed" $?
-printf '[Unit]\nDescription=other\n' >"$SYSD/cosmic-greeter.service"
+printf '[Service]\nExecStart=\n' >"$SYSD/greetd.service.d/cosmic-greeter.conf"
 desk
-grep -q '^daemon-reload' "$SYSLOG"
-check "daemon-reload runs when a unit file changed" $?
+grep -q '^daemon-reload' "$SYSLOG" &&
+  cmp -s "$REPO_ROOT/files/desktop/greetd-cosmic.conf" "$SYSD/greetd.service.d/cosmic-greeter.conf" &&
+  compgen -G "$SYSD/greetd.service.d/cosmic-greeter.conf.bak.*" >/dev/null
+check "a changed drop-in is backed up, replaced and followed by daemon-reload" $?
 
 # --- display manager switching ----------------------------------------------
 reset_state
 printf '%s\n' gdm3.service greetd.service lightdm.service >"$FAKE_STATE/enabled"
 mkdir -p "$SYSD" && ln -sfn gdm3.service "$SYSD/display-manager.service"
 desk
-for dm in gdm3 greetd lightdm; do
+for dm in gdm3 lightdm; do
   grep -qx "disable $dm.service" "$SYSLOG"
   check "enabled display manager $dm is disabled" $?
 done
-! grep -Eq '^disable (sddm|lxdm|ly)\.service' "$SYSLOG"
-check "display managers that are not enabled are left alone" $?
-last_disable="$(grep -n '^disable' "$SYSLOG" | tail -n1 | cut -d: -f1)"
-enable_line="$(grep -n '^enable cosmic-greeter.service' "$SYSLOG" | cut -d: -f1)"
-((last_disable < enable_line))
-check "other display managers are disabled before cosmic-greeter is enabled" $?
-[[ "$(readlink -f "$SYSD/display-manager.service")" == */cosmic-greeter.service ]]
-check "display-manager.service ends up at cosmic-greeter.service" $?
+! grep -Eq '^disable (sddm|lxdm|ly|greetd)\.service' "$SYSLOG"
+check "display managers that are not enabled, and greetd itself, are left alone" $?
+[[ "$(readlink -f "$SYSD/display-manager.service")" == */greetd.service ]]
+check "display-manager.service ends up at greetd.service" $?
 ! grep -qi 'getty' "$SYSLOG"
 check "no getty unit touched while switching" $?
+[[ "$(readlink "$SYSD/display-manager.service")" == /lib/systemd/system/greetd.service ]]
+check "the link is the one Debian's postinst makes" $?
+
+# A stale link to another unit is replaced; debconf already right is not set again.
+reset_state
+echo greetd >"$FAKE_STATE/debconf"
+mkdir -p "$SYSD" && ln -sfn other-dm.service "$SYSD/display-manager.service"
+desk
+[[ "$rc" == 0 && "$(readlink -f "$SYSD/display-manager.service")" == */greetd.service ]]
+check "a stale display-manager.service link is replaced by the greetd link" $?
+[[ ! -e "$FAKE_STATE/debconf.log" ]]
+check "debconf is not set again when it already says greetd" $?
+reset_state
+echo gdm3 >"$FAKE_STATE/debconf"
+desk
+grep -qx 'greetd shared/default-x-display-manager select greetd' "$FAKE_STATE/debconf.log" &&
+  [[ "$(cat "$FAKE_STATE/debconf")" == greetd ]]
+check "debconf saying gdm3 is switched to greetd" $?
+reset_state
+mkdir -p "$KCS_ROOT/etc/X11" && echo /usr/sbin/gdm3 >"$KCS_ROOT/etc/X11/default-display-manager"
+desk
+[[ "$(cat "$KCS_ROOT/etc/X11/default-display-manager")" == /usr/sbin/greetd ]] &&
+  compgen -G "$KCS_ROOT/etc/X11/default-display-manager.bak.*" >/dev/null
+check "default-display-manager is rewritten to greetd with a backup" $?
+dm_line="$(grep -n 'debconf-set-selections' "$FAKE_STATE/all.log" | head -n1 | cut -d: -f1)"
+ln_line="$(grep -n '^ln ' "$FAKE_STATE/all.log" | head -n1 | cut -d: -f1)"
+[[ -n "$dm_line" && -n "$ln_line" ]] && ((dm_line < ln_line))
+check "debconf is set before the display-manager link is made" $?
+
+# A masked display-manager.service is never unmasked: the module fails.
+reset_state
+mkdir -p "$SYSD" && ln -sfn /dev/null "$SYSD/display-manager.service"
+printf '%s\n' gdm3 gnome-shell >"$FAKE_STATE/installed"
+desk
+[[ "$rc" != 0 && "$(readlink "$SYSD/display-manager.service")" == /dev/null ]] &&
+  grep -q 'masked' "$WORK/out" && ! grep -qw 'unmask' "$FAKE_STATE/systemctl.log" &&
+  ! grep -q ' purge ' "$FAKE_STATE/apt.log"
+check "a masked display-manager.service fails loudly, is not unmasked, nothing purged" $?
+
+# --- migration from the earlier cosmic-greeter.service ----------------------
+reset_state
+mkdir -p "$SYSD"
+printf '[Unit]\nDescription=old\n' >"$SYSD/cosmic-greeter.service"
+ln -sfn cosmic-greeter.service "$SYSD/display-manager.service"
+echo cosmic-greeter.service >"$FAKE_STATE/enabled"
+desk
+[[ "$rc" == 0 && ! -e "$SYSD/cosmic-greeter.service" ]] &&
+  compgen -G "$SYSD/cosmic-greeter.service.bak.*" >/dev/null
+check "the old cosmic-greeter.service is removed with a backup" $?
+grep -qx 'disable cosmic-greeter.service' "$SYSLOG" && grep -q '^daemon-reload' "$SYSLOG"
+check "the old unit is disabled first and systemd reloaded" $?
+[[ "$(readlink -f "$SYSD/display-manager.service")" == */greetd.service ]]
+check "after the migration display-manager.service resolves to greetd.service" $?
+
+# --- GDM purge --------------------------------------------------------------
+# gdm_system: an up-to-date Kali "default tools" system with gdm3 and gnome-shell.
+gdm_system() {
+  reset_state
+  printf '%s\n' gdm3 gnome-shell >"$FAKE_STATE/installed"
+  printf '%s\n' gdm3.service >"$FAKE_STATE/enabled"
+  echo gdm3 >"$FAKE_STATE/debconf"
+  mkdir -p "$SYSD" "$KCS_ROOT/etc/X11"
+  ln -sfn /lib/systemd/system/gdm3.service "$SYSD/display-manager.service"
+  echo /usr/sbin/gdm3 >"$KCS_ROOT/etc/X11/default-display-manager"
+}
+gdm_system
+printf '%s\n' 'Purg gdm3 [50.2]' 'Purg gnome-browser-connector [1]' 'Purg gnome-session [1]' \
+  'Purg gnome-shell [50.4]' >"$FAKE_STATE/sim-purge"
+printf '%s\n' 'Remv libgnome-orphan1 [1]' 'Remv some-orphan [2]' >"$FAKE_STATE/sim-autoremove"
+desk
+APT="$FAKE_STATE/apt.log"
+[[ "$rc" == 0 ]] && grep -Eq -- '^(-y )?.*purge gdm3 gnome-shell \[DEBIAN_FRONTEND=noninteractive\]' "$APT" &&
+  grep -q -- 'force-confold.* purge gdm3 gnome-shell' "$APT"
+check "a clean simulation purges gdm3 and gnome-shell non-interactively" $?
+grep -q -- '-s purge gdm3 gnome-shell' "$APT"
+check "the purge is simulated first with only the installed packages" $?
+grep -q 'gnome-browser-connector' "$WORK/out" && grep -q 'gnome-session' "$WORK/out"
+check "the purge log lists everything that goes" $?
+grep -qx 'default-dm=/usr/sbin/greetd' "$FAKE_STATE/purge-state.log" &&
+  grep -qx 'link=/lib/systemd/system/greetd.service' "$FAKE_STATE/purge-state.log"
+check "at purge time the display manager is already greetd" $?
+set_line="$(grep -n 'debconf-set-selections' "$FAKE_STATE/all.log" | head -n1 | cut -d: -f1)"
+ln_line="$(grep -n '^ln ' "$FAKE_STATE/all.log" | head -n1 | cut -d: -f1)"
+purge_line="$(grep -nE '^apt-get .* purge gdm3' "$FAKE_STATE/all.log" | grep -Ev -- '(^|[ :])-s ' | head -n1 | cut -d: -f1)"
+[[ -n "$set_line" && -n "$ln_line" && -n "$purge_line" ]] && ((set_line < purge_line && ln_line < purge_line))
+check "command order: debconf and link first, purge after" $?
+! grep -q 'autoremove' <(real_apt) && grep -q -- '-s autoremove' "$APT"
+check "autoremove is only ever simulated" $?
+grep -q 'orphans (not removed, report to the owner)' "$WORK/out" &&
+  grep -q 'libgnome-orphan1' "$WORK/out" && grep -q 'some-orphan' "$WORK/out"
+check "the autoremove simulation is reported under the orphans heading" $?
+! grep -qi 'getty' "$SYSLOG" && ! grep -qw 'mask' "$SYSLOG"
+check "no getty disabled or masked during the purge run" $?
+[[ "$(readlink -f "$SYSD/display-manager.service")" == */greetd.service ]]
+check "after the purge display-manager.service still resolves to greetd.service" $?
+
+# second run on the switched system without gdm3 changes nothing
+desk
+[[ "$rc" == 0 ]] && grep -q 'total changes: 0' "$WORK/out" && [[ ! -s "$FAKE_STATE/apt.log" ]] &&
+  ! grep -Eq "$mutating" "$SYSLOG" && [[ ! -e "$FAKE_STATE/debconf.log" ]]
+check "second run after the purge: zero changes, no apt call, no debconf set" $?
+
+# a kali-* package in the simulation prevents the purge
+gdm_system
+printf '%s\n' 'Purg gdm3 [50.2]' 'Purg gnome-shell [50.4]' 'Purg kali-desktop-gnome [1]' >"$FAKE_STATE/sim-purge"
+desk
+[[ "$rc" == 0 ]] && ! grep -Eq -- ' purge ' <(real_apt) &&
+  grep -q 'kali-desktop-gnome' "$WORK/out" && grep -q 'kept installed but disabled' "$WORK/out"
+check "a kali-* package in the simulation prevents the purge and warns" $?
+! grep -q 'autoremove' "$FAKE_STATE/apt.log"
+check "no autoremove simulation when nothing was purged" $?
+[[ "$(readlink -f "$SYSD/display-manager.service")" == */greetd.service ]] &&
+  ! grep -qx 'gdm3.service' "$FAKE_STATE/enabled"
+check "with GDM kept, greetd is the display manager and gdm3 is disabled" $?
+desk
+[[ "$rc" == 0 ]] && grep -q 'total changes: 0' "$WORK/out"
+check "second run with GDM kept changes nothing" $?
+
+# only one of the two installed: only that one is simulated and purged
+gdm_system
+printf '%s\n' gdm3 >"$FAKE_STATE/installed"
+desk
+grep -q -- '-s purge gdm3 \[' "$FAKE_STATE/apt.log" && ! grep -q 'gnome-shell' "$FAKE_STATE/apt.log"
+check "only the installed ones are simulated and purged" $?
+
+# the installer running inside the graphical session that gdm3 serves
+gdm_system
+echo gdm3.service >"$FAKE_STATE/active"
+T_SESSION=wayland desk
+[[ "$rc" == 0 ]] && ! grep -q ' purge ' <(real_apt) &&
+  grep -qi 'reboot' "$WORK/out" && grep -q -- '--only desktop' "$WORK/out"
+check "graphical session guard (wayland, gdm3 active): no purge, reboot advice" $?
+gdm_system
+echo gdm3.service >"$FAKE_STATE/active"
+T_DISPLAY=:0 desk
+! grep -q ' purge ' <(real_apt)
+check "graphical session guard also triggers on DISPLAY" $?
+gdm_system
+T_SESSION=wayland desk
+grep -q ' purge gdm3 gnome-shell ' <(real_apt)
+check "graphical session without an active gdm3: the purge goes ahead" $?
+gdm_system
+echo gdm3.service >"$FAKE_STATE/active"
+T_SESSION='tty' desk
+grep -q ' purge gdm3 gnome-shell ' <(real_apt)
+check "text session with gdm3 active: the purge goes ahead" $?
+
+# dry-run: simulates, prints, never purges
+gdm_system
+desk --dry-run
+[[ "$rc" == 0 ]] && ! grep -q ' purge ' <(real_apt) &&
+  grep -q 'would run: sudo .*purge gdm3 gnome-shell' "$WORK/out" &&
+  grep -q 'orphans (not removed, report to the owner)' "$WORK/out"
+check "dry-run prints the purge and the orphans report without purging" $?
+
+# a failing purge or simulation fails the module
+gdm_system
+FAKE_APT_RC=1 desk
+[[ "$rc" != 0 ]]
+check "a failing apt-get fails the module" $?
 
 # --- sysusers only when the user is missing ---------------------------------
 reset_state
@@ -212,26 +392,28 @@ check "an existing cosmic-greeter user means no sysusers and no tmpfiles" $?
 
 # --- privileged step failures fail the module ---------------------------------
 for cmd in 'systemd-sysusers cosmic-greeter.conf' 'systemd-tmpfiles --create cosmic-greeter.conf' \
-  'systemctl daemon-reload' 'systemctl enable cosmic-greeter.service' \
+  'systemctl daemon-reload' 'debconf-set-selections' \
   'systemctl enable cosmic-greeter-daemon.service' 'systemctl set-default graphical.target'; do
   reset_state
   FAKE_FAIL="|$cmd|" desk
   [[ "$rc" != 0 ]] && grep -q "module 'desktop' failed" "$WORK/out"
   check "a failing '$cmd' fails the module" $?
 done
-reset_state
-printf '%s\n' gdm3.service >"$FAKE_STATE/enabled"
-mkdir -p "$SYSD" && ln -sfn gdm3.service "$SYSD/display-manager.service"
+gdm_system
 FAKE_FAIL="|systemctl disable gdm3.service|" desk
-[[ "$rc" != 0 ]] && ! grep -q '^enable cosmic-greeter.service' "$FAKE_STATE/systemctl.log"
-check "a failing 'systemctl disable' fails the module before enabling the greeter" $?
+[[ "$rc" != 0 ]] && [[ ! -e "$FAKE_STATE/purge-state.log" ]] &&
+  [[ "$(readlink "$SYSD/display-manager.service")" == /lib/systemd/system/gdm3.service ]]
+check "a failing 'systemctl disable' fails the module before the link and the purge" $?
 
 # --- display-manager link is verified ---------------------------------------
 reset_state
-mkdir -p "$SYSD" && ln -sfn other-dm.service "$SYSD/display-manager.service"
-FAKE_NO_ALIAS=1 desk
-[[ "$rc" != 0 ]] && grep -q 'display-manager.service does not resolve to cosmic-greeter.service' "$WORK/out"
-check "an alias still held by another unit fails with a clear message" $?
+FAKE_NO_LN=1 desk
+[[ "$rc" != 0 ]] && grep -q 'display-manager.service does not resolve to greetd.service' "$WORK/out"
+check "a link that cannot be made fails with a clear message" $?
+gdm_system
+FAKE_NO_LN=1 desk
+[[ "$rc" != 0 && ! -e "$FAKE_STATE/purge-state.log" ]]
+check "no purge when the display manager switch did not verify" $?
 reset_state
 desk --dry-run
 [[ "$rc" == 0 ]] && ! grep -q 'does not resolve' "$WORK/out"
@@ -243,6 +425,8 @@ for dm in xdm slim nodm; do
   grep -qx "disable $dm.service" "$FAKE_STATE/systemctl.log"
   check "enabled display manager $dm is disabled" $?
 done
+! grep -Eq '^[^#]*(_apt_get|run_sudo)[^#]*autoremove' "$REPO_ROOT/modules/06-desktop.sh"
+check "the module source never runs a real autoremove" $?
 
 # --- key fingerprint mismatch aborts ---------------------------------------
 reset_state

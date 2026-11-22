@@ -43,9 +43,13 @@ _DESKTOP_BASE=(
   upower
 )
 
-# Display managers to turn off so cosmic-greeter owns display-manager.service.
-# greetd.service is Debian's own unit, which may be enabled by its package.
-_DESKTOP_OTHER_DM=(gdm3 lightdm sddm lxdm ly xdm slim nodm greetd)
+# Other display managers to turn off so Debian's greetd.service owns
+# display-manager.service (greetd itself is the one we keep).
+_DESKTOP_OTHER_DM=(gdm3 lightdm sddm lxdm ly xdm slim nodm)
+
+# A Kali "default tools" install still ships GDM and GNOME Shell; they are
+# purged (under guards) once greetd is the display manager.
+_DESKTOP_GDM_PKGS=(gdm3 gnome-shell)
 
 # apt preferences: the specific record comes first (apt uses the first match),
 # so only the two COSMIC meta packages can come from the repo; every other
@@ -76,15 +80,34 @@ _desktop_repo() {
   fi
 }
 
-# _desktop_files: the four files the package does not ship. daemon-reload only
-# when a unit file changed.
+# _desktop_migrate_old_unit: an earlier version of this module installed its
+# own /etc/systemd/system/cosmic-greeter.service as the display manager alias.
+# Debian's greetd postinst would overwrite that alias, so disable and remove it
+# (with a backup). Sets FILE_CHANGED=1 when it removed the file.
+_desktop_migrate_old_unit() {
+  local old
+  old="$(rootpath /etc/systemd/system/cosmic-greeter.service)"
+  FILE_CHANGED=0
+  [[ -e "$old" || -L "$old" ]] || return 0
+  log_change "remove the old cosmic-greeter.service (replaced by the greetd drop-in)"
+  run_sudo_may_fail systemctl disable cosmic-greeter.service ||
+    log_warn "could not disable the old cosmic-greeter.service, removing the file anyway"
+  backup_file "$old"
+  _priv_run "$old" rm -f -- "$old"
+  FILE_CHANGED=1
+}
+
+# _desktop_files: the files the package does not ship, plus the old unit
+# migration. daemon-reload only when a unit or drop-in changed.
 _desktop_files() {
   local src="$REPO_ROOT/files/desktop" units_changed=0
+  _desktop_migrate_old_unit || return 1
+  ((FILE_CHANGED)) && units_changed=1
   install_file "$src/cosmic-greeter-daemon.service" \
     "$(rootpath /etc/systemd/system/cosmic-greeter-daemon.service)" 0644 || return 1
   ((FILE_CHANGED)) && units_changed=1
-  install_file "$src/cosmic-greeter.service" \
-    "$(rootpath /etc/systemd/system/cosmic-greeter.service)" 0644 || return 1
+  install_file "$src/greetd-cosmic.conf" \
+    "$(rootpath /etc/systemd/system/greetd.service.d/cosmic-greeter.conf)" 0644 || return 1
   ((FILE_CHANGED)) && units_changed=1
   install_file "$src/cosmic-greeter.toml" \
     "$(rootpath /etc/greetd/cosmic-greeter.toml)" 0644 || return 1
@@ -110,34 +133,154 @@ _desktop_greeter_user() {
   fi
 }
 
-# _desktop_display_manager: cosmic-greeter owns display-manager.service. Other
-# display managers are disabled first. The module never disables or masks any
-# getty unit. The shipped cosmic-greeter.service itself conflicts with
-# getty@tty1 (upstream design: the greeter takes VT1); the other VTs keep their
-# gettys, which is the recovery path.
-_desktop_display_manager() {
-  local dm_link s
-  dm_link="$(rootpath /etc/systemd/system/display-manager.service)"
-  if [[ "$(readlink -f -- "$dm_link" 2>/dev/null)" != */cosmic-greeter.service ]]; then
-    for s in "${_DESKTOP_OTHER_DM[@]}"; do
-      if systemctl is-enabled --quiet "$s.service" >/dev/null 2>&1; then
-        log_change "disable $s.service"
-        run_sudo systemctl disable "$s.service" || return 1
-      fi
-    done
-    log_change "enable display manager: cosmic-greeter"
-    run_sudo systemctl enable cosmic-greeter.service || return 1
-    # A display manager missing from the list above could still hold the alias.
-    if [[ "$DRY_RUN" != "1" && "$(readlink -f -- "$dm_link" 2>/dev/null)" != */cosmic-greeter.service ]]; then
-      log_error "display-manager.service does not resolve to cosmic-greeter.service after enabling it; another display manager still holds the alias. Disable it and run the installer again"
-      return 1
-    fi
-    log_warn "reboot to reach the COSMIC login"
+# _desktop_link_target <link>: where a link resolves to (readlink -f, or the
+# plain link text when a parent directory is missing).
+_desktop_link_target() {
+  readlink -f -- "$1" 2>/dev/null || readlink -- "$1" 2>/dev/null || true
+}
+
+# _desktop_dm_is_greetd: true when display-manager.service resolves to
+# greetd.service.
+_desktop_dm_is_greetd() {
+  local target
+  target="$(_desktop_link_target "$(rootpath /etc/systemd/system/display-manager.service)")"
+  [[ "${target##*/}" == greetd.service ]]
+}
+
+# _desktop_verify_dm: greetd must be the display manager by both the unit link
+# and /etc/X11/default-display-manager. Logs the reason and returns 1 if not.
+_desktop_verify_dm() {
+  local dm_file
+  dm_file="$(rootpath /etc/X11/default-display-manager)"
+  if ! _desktop_dm_is_greetd; then
+    log_error "display-manager.service does not resolve to greetd.service; another display manager still holds it. Fix it and run the installer again"
+    return 1
   fi
+  if [[ ! -f "$dm_file" || "$(<"$dm_file")" != /usr/sbin/greetd ]]; then
+    log_error "/etc/X11/default-display-manager is not /usr/sbin/greetd"
+    return 1
+  fi
+}
+
+# _desktop_debconf_dm: the current answer of shared/default-x-display-manager
+# (empty when unknown). debconf's database is root-only, so try sudo first
+# (no prompt: -n) and fall back to a plain read. Read-only.
+_desktop_debconf_dm() {
+  local out
+  out="$(sudo -n debconf-show greetd 2>/dev/null)" ||
+    out="$(debconf-show greetd 2>/dev/null)" || out=""
+  printf '%s\n' "$out" |
+    awk '/shared\/default-x-display-manager:/ { sub(/^.*: */, ""); print; exit }'
+}
+
+# _desktop_display_manager: make Debian's greetd.service the display manager,
+# the same three things its postinst does: the debconf answer, the
+# /etc/X11/default-display-manager file and the display-manager.service link.
+# The drop-in (installed earlier) points greetd at the COSMIC config. The
+# module never disables or masks any getty unit; greetd runs on VT7 and
+# conflicts only with getty@tty7, so getty@tty1 stays free for recovery.
+_desktop_display_manager() {
+  local dm_link s link_changed=0
+  dm_link="$(rootpath /etc/systemd/system/display-manager.service)"
+
+  if [[ "$(readlink -- "$dm_link" 2>/dev/null)" == /dev/null ]]; then
+    log_error "display-manager.service is masked (links to /dev/null); not unmasking it. Unmask it yourself if that is intended, then run the installer again"
+    return 1
+  fi
+
   if ! systemctl is-enabled --quiet cosmic-greeter-daemon.service >/dev/null 2>&1; then
     log_change "enable cosmic-greeter-daemon.service"
     run_sudo systemctl enable cosmic-greeter-daemon.service || return 1
   fi
+
+  if [[ "$(_desktop_debconf_dm)" != greetd ]]; then
+    log_change "debconf: shared/default-x-display-manager = greetd"
+    run_sudo debconf-set-selections <<<"greetd shared/default-x-display-manager select greetd" || return 1
+  fi
+
+  ensure_file_content "$(rootpath /etc/X11/default-display-manager)" /usr/sbin/greetd || return 1
+
+  for s in "${_DESKTOP_OTHER_DM[@]}"; do
+    if systemctl is-enabled --quiet "$s.service" >/dev/null 2>&1; then
+      log_change "disable $s.service"
+      run_sudo systemctl disable "$s.service" || return 1
+    fi
+  done
+
+  if ! _desktop_dm_is_greetd; then
+    log_change "link display-manager.service to greetd.service"
+    _priv_run "$dm_link" mkdir -p -- "$(dirname "$dm_link")" || return 1
+    _priv_run "$dm_link" ln -sfn -- /lib/systemd/system/greetd.service "$dm_link" || return 1
+    link_changed=1
+  fi
+
+  if [[ "$DRY_RUN" != "1" ]]; then
+    _desktop_verify_dm || return 1
+  fi
+  if ((link_changed)); then
+    log_warn "reboot to reach the COSMIC login"
+  fi
+}
+
+# _desktop_in_graphical_session: true when this installer runs inside an X11 or
+# Wayland session.
+_desktop_in_graphical_session() {
+  case "${XDG_SESSION_TYPE:-}" in x11 | wayland) return 0 ;; esac
+  [[ -n "${WAYLAND_DISPLAY:-}" || -n "${DISPLAY:-}" ]]
+}
+
+# _desktop_purge_gdm: remove gdm3 and gnome-shell, only after greetd is the
+# verified display manager. A runtime simulation decides: a kali-* package in
+# it means the purge is skipped (GDM stays installed but disabled). Inside a
+# graphical session served by gdm3 the purge is skipped too, since it would
+# stop gdm3 and kill the session running the installer. autoremove is never
+# run for real: it is only simulated and the result reported.
+_desktop_purge_gdm() {
+  local p out
+  local -a present=() would=() kali=() orphans=()
+  for p in "${_DESKTOP_GDM_PKGS[@]}"; do
+    if pkg_installed "$p"; then
+      present+=("$p")
+    fi
+  done
+  ((${#present[@]})) || return 0
+
+  if [[ "$DRY_RUN" != "1" ]]; then
+    _desktop_verify_dm || return 1
+  fi
+
+  if ! out="$(apt-get -s purge "${present[@]}" 2>&1)"; then
+    log_error "cannot simulate the purge of ${present[*]}: $out"
+    return 1
+  fi
+  mapfile -t would < <(printf '%s\n' "$out" | awk '/^(Purg|Remv) / { print $2 }' | sort -u)
+  if ((${#would[@]} == 0)); then
+    log_error "the simulated purge of ${present[*]} lists no package; not purging"
+    return 1
+  fi
+  mapfile -t kali < <(printf '%s\n' "${would[@]}" | { grep '^kali-' || true; })
+  if ((${#kali[@]} > 0)); then
+    log_warn "not purging ${present[*]}: it would also remove Kali packages (${kali[*]}). GDM is kept installed but disabled; greetd is the display manager"
+    return 0
+  fi
+
+  if _desktop_in_graphical_session && systemctl is-active --quiet gdm3.service >/dev/null 2>&1; then
+    log_warn "not purging ${present[*]} now: this installer runs inside the graphical session of gdm3, and the purge would end it. Reboot (greetd takes over), then run ./install.sh --only desktop again from the new session or a text console"
+    return 0
+  fi
+
+  log_change "purge ${present[*]} (removes: ${would[*]})"
+  _apt_get purge "${present[@]}" || return 1
+  if [[ "$DRY_RUN" != "1" ]]; then
+    _desktop_verify_dm || return 1
+  fi
+
+  if out="$(apt-get -s autoremove 2>&1)"; then
+    mapfile -t orphans < <(printf '%s\n' "$out" | awk '/^Remv / { print $2 }')
+  else
+    log_warn "could not simulate autoremove: $out"
+  fi
+  log_info "orphans (not removed, report to the owner): ${orphans[*]:-none}"
 }
 
 module_apply() {
@@ -168,4 +311,6 @@ module_apply() {
     log_change "set default boot target: graphical.target"
     run_sudo systemctl set-default graphical.target || return 1
   fi
+
+  _desktop_purge_gdm || return 1
 }

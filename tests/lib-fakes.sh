@@ -41,25 +41,57 @@ echo "dpkg-query: no packages found matching $pkg" >&2
 exit 1
 EOS
 
-  # apt-get: logs "<args> [DEBIAN_FRONTEND=...]"; `install` marks the named
-  # packages as installed.
+  # apt-get: logs "<args> [DEBIAN_FRONTEND=...]" to apt.log (and the call order
+  # to all.log). `install` marks the named packages as installed. Simulations
+  # (-s) never change state: `-s purge` prints $FAKE_STATE/sim-purge (default:
+  # one "Purg <pkg>" line per named package) and `-s autoremove` prints
+  # $FAKE_STATE/sim-autoremove. A real `purge` records the display manager
+  # state at that moment in purge-state.log, then removes the named packages
+  # and everything listed in sim-purge from $FAKE_STATE/installed.
   cat >"$bin/apt-get" <<'EOS'
 #!/bin/sh
 echo "$* [DEBIAN_FRONTEND=${DEBIAN_FRONTEND:-}]" >>"$FAKE_STATE/apt.log"
-[ "$1" = "-y" ] && shift
+echo "apt-get $*" >>"$FAKE_STATE/all.log"
 cmd=""
 skip=0
+sim=0
+pk=""
 for a in "$@"; do
   if [ "$skip" = 1 ]; then skip=0; continue; fi
   case "$a" in
     -o) skip=1 ;;
+    -s) sim=1 ;;
     -*) ;;
     *)
       if [ -z "$cmd" ]; then cmd="$a"
-      elif [ "$cmd" = install ]; then echo "$a" >>"$FAKE_STATE/installed"; fi
+      else
+        pk="$pk $a"
+        if [ "$cmd" = install ] && [ "$sim" = 0 ]; then echo "$a" >>"$FAKE_STATE/installed"; fi
+      fi
       ;;
   esac
 done
+if [ "$sim" = 1 ]; then
+  case "$cmd" in
+    purge)
+      if [ -f "$FAKE_STATE/sim-purge" ]; then cat "$FAKE_STATE/sim-purge"
+      else for p in $pk; do echo "Purg $p [1.0]"; done; fi
+      ;;
+    autoremove) [ -f "$FAKE_STATE/sim-autoremove" ] && cat "$FAKE_STATE/sim-autoremove" ;;
+  esac
+  exit 0
+fi
+if [ "$cmd" = purge ]; then
+  {
+    echo "default-dm=$(cat "${KCS_ROOT:-}/etc/X11/default-display-manager" 2>/dev/null)"
+    echo "link=$(readlink "${KCS_ROOT:-}/etc/systemd/system/display-manager.service" 2>/dev/null)"
+  } >>"$FAKE_STATE/purge-state.log"
+  gone="$pk $(sed -n 's/^Purg \([^ ]*\).*/\1/p' "$FAKE_STATE/sim-purge" 2>/dev/null)"
+  for p in $gone; do
+    grep -vx -- "$p" "$FAKE_STATE/installed" >"$FAKE_STATE/installed.new" 2>/dev/null
+    mv -- "$FAKE_STATE/installed.new" "$FAKE_STATE/installed"
+  done
+fi
 exit "${FAKE_APT_RC:-0}"
 EOS
 
@@ -128,6 +160,10 @@ case "$cmd" in
     for a in "$@"; do unit="$a"; done
     grep -qx -- "$unit" "$FAKE_STATE/enabled" 2>/dev/null
     ;;
+  is-active)
+    for a in "$@"; do unit="$a"; done
+    grep -qx -- "$unit" "$FAKE_STATE/active" 2>/dev/null
+    ;;
   get-default)
     cat "$FAKE_STATE/default" 2>/dev/null || echo multi-user.target
     ;;
@@ -177,6 +213,39 @@ EOS
 case "|${FAKE_FAIL:-}|" in *"|systemd-tmpfiles $*|"*) exit 1 ;; esac
 echo "$*" >>"$FAKE_STATE/tmpfiles.log"
 mkdir -p "${KCS_ROOT:-}/var/lib/cosmic-greeter"
+EOS
+
+  # debconf-show <pkg>: prints the shared display manager answer stored in
+  # $FAKE_STATE/debconf (nothing when unset), like the real command.
+  cat >"$bin/debconf-show" <<'EOS'
+#!/bin/sh
+echo "debconf-show $*" >>"$FAKE_STATE/all.log"
+case "|${FAKE_FAIL:-}|" in *"|debconf-show $*|"*) exit 1 ;; esac
+echo "  greetd/daemon_name: /usr/sbin/greetd"
+if [ -s "$FAKE_STATE/debconf" ]; then
+  echo "* shared/default-x-display-manager: $(cat "$FAKE_STATE/debconf")"
+fi
+EOS
+
+  # debconf-set-selections: reads the selections on stdin, logs them and
+  # stores the display manager answer in $FAKE_STATE/debconf.
+  cat >"$bin/debconf-set-selections" <<'EOS'
+#!/bin/sh
+case "|${FAKE_FAIL:-}|" in *"|debconf-set-selections|"*) exit 1 ;; esac
+echo "debconf-set-selections" >>"$FAKE_STATE/all.log"
+while IFS= read -r line; do
+  echo "$line" >>"$FAKE_STATE/debconf.log"
+  set -- $line
+  if [ "$2" = shared/default-x-display-manager ]; then echo "$4" >"$FAKE_STATE/debconf"; fi
+done
+EOS
+
+  # ln: records the call, FAKE_NO_LN makes it a no-op, otherwise the real ln.
+  cat >"$bin/ln" <<'EOS'
+#!/bin/sh
+echo "ln $*" >>"$FAKE_STATE/all.log"
+[ -n "${FAKE_NO_LN:-}" ] && exit 0
+exec /usr/bin/ln "$@"
 EOS
 
   chmod +x "$bin"/*

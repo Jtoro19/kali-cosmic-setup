@@ -9,8 +9,10 @@ is in [specs/000-plan.md](specs/000-plan.md).
 ## Requirements
 
 - A fresh Kali Linux install (kali-rolling) made with the graphical installer,
-  choosing "no desktop" and the Kali tools set; the `desktop` module installs
-  COSMIC
+  choosing "no desktop" in tasksel and the default Kali tools. That install
+  still ships GDM and GNOME Shell; the `desktop` module installs COSMIC, makes
+  greetd the display manager and purges GDM and GNOME Shell (kept, disabled, if
+  a `kali-*` package depends on them)
 - bash
 - sudo (the installer refuses to run as root and calls sudo where needed)
 - Network access to the Kali mirror and to the third-party repositories the
@@ -66,7 +68,7 @@ when named with `--only`.
 
 | Module | Opt-in | What it does | How to revert |
 |--------|--------|--------------|---------------|
-| desktop | no | COSMIC desktop for a no-desktop Kali install, from the community apt repo `rickysarraf.github.io/debian-cosmic` (key fingerprint verified, apt pin so it can never replace a Kali package): `cosmic-epoch-monorepo` without recommends, greetd with cosmic-greeter as display manager, PipeWire, BlueZ, NetworkManager, keyring and session base; full upgrade on first run; graphical boot target. Risk: single-maintainer community repo, not supported by Kali or Debian | `sudo systemctl disable cosmic-greeter.service cosmic-greeter-daemon.service`, `sudo systemctl set-default multi-user.target`, remove the four shipped files, `sudo apt-get purge cosmic-epoch-monorepo`, remove the repo `.sources`, pin and key, `sudo apt-get update` (details in `specs/desktop.md`) |
+| desktop | no | COSMIC desktop for a no-desktop Kali install, from the community apt repo `rickysarraf.github.io/debian-cosmic` (key fingerprint verified, apt pin so it can never replace a Kali package): `cosmic-epoch-monorepo` without recommends, greetd (Debian's greetd.service plus a drop-in) with cosmic-greeter as the only display manager, GDM and GNOME Shell purged under guards, PipeWire, BlueZ, NetworkManager, keyring and session base; full upgrade on first run; graphical boot target. Risk: single-maintainer community repo, not supported by Kali or Debian | see "Revert" in `specs/desktop.md`: remove the drop-in, toml, PAM file and daemon unit, reinstall `gdm3 gnome-shell gnome-session`, restore the debconf answer, `/etc/X11/default-display-manager` and the `display-manager.service` link to gdm3, then `sudo apt-get purge cosmic-epoch-monorepo`, remove the repo `.sources`, pin and key, `sudo apt-get update` |
 
 ## Recovery
 
@@ -75,7 +77,8 @@ when named with `--only`.
 - Each run is logged under `~/.cache/kali-cosmic-setup/`; start there when a
   module fails.
 - If the graphical login does not come up, switch to a text console
-  (Ctrl+Alt+F2), log in and run `sudo systemctl disable cosmic-greeter.service`,
+  (Ctrl+Alt+F2 or F1), log in and run
+  `sudo rm /etc/systemd/system/display-manager.service`,
   `sudo systemctl set-default multi-user.target`, then `sudo reboot`. The
   installer never disables or masks the text consoles (getty), so this always
   works. More in `specs/desktop.md`.
