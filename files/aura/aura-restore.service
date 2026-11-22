@@ -2,12 +2,15 @@
 Description=Restore the last Aura animated wallpaper
 PartOf=graphical-session.target
 After=graphical-session.target
+# Stop retrying after 5 failed starts in 2 minutes instead of looping forever.
+StartLimitIntervalSec=120
+StartLimitBurst=5
 
 [Service]
 Type=simple
 ExecStart=%h/.local/bin/aura-restore
 Restart=on-failure
-RestartSec=3
+RestartSec=5
 
 [Install]
 WantedBy=graphical-session.target

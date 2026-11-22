@@ -67,7 +67,7 @@ reset_state() {
 au() {
   rm -f -- "${FAKE_STATE:?}"/*.log
   rc=0
-  HOME="$HOME_DIR" USER=tester PATH="$WORK/bin:$PATH" KCS_TEST="${AU_KCS_TEST-1}" KCS_SKIP_SUDO=1 KCS_SKIP_OS_CHECK=1 \
+  HOME="${AU_HOME:-$HOME_DIR}" USER=tester PATH="$WORK/bin:$PATH" KCS_TEST="${AU_KCS_TEST-1}" KCS_SKIP_SUDO=1 KCS_SKIP_OS_CHECK=1 \
     XDG_CACHE_HOME="$WORK/cache" XDG_STATE_HOME="$WORK/state-home" XDG_RUNTIME_DIR="$WORK/run" TMPDIR="$WORK/tmp" \
     "$REPO_ROOT/install.sh" --only aura "$@" >"$WORK/out" 2>&1 </dev/null || rc=$?
 }
@@ -115,7 +115,7 @@ check "install: icon and metainfo are in ~/.local/share" $?
 D="$SHARE/applications/io.github.antwny.aura.desktop"
 grep -qx "Exec=$BINDIR/aura" "$D" && grep -qx "TryExec=$BINDIR/aura" "$D" && [[ "$(grep -c '^TryExec=' "$D")" == 1 ]]
 check "install: the desktop entry gets an absolute Exec and a single TryExec" $?
-[[ "$(<"$MARKER")" == "$VER" ]]
+[[ "$(sed -n 1p "$MARKER")" == "$VER" && "$(sed -n 2p "$MARKER")" == mpvpaper=bundled ]]
 check "marker: the installed version is recorded" $?
 cmp -s "$REPO_ROOT/files/aura/aura-restore" "$BINDIR/aura-restore" && cmp -s "$REPO_ROOT/files/aura/aura-restore.service" "$UNIT" && [[ -x "$BINDIR/aura-restore" ]]
 check "restore: script and user unit are installed" $?
@@ -168,7 +168,7 @@ mkdir -p "$(dirname "$MARKER")"
 echo v1.4.0 >"$MARKER"
 printf 'old binary\n' >"$BINDIR/aura"
 au
-[[ "$rc" == 0 && "$(<"$MARKER")" == "$VER" ]] && "$BINDIR/aura" | grep -q "aura $VER" && grep -qx "$URL" "$FAKE_STATE/curl.log"
+[[ "$rc" == 0 && "$(sed -n 1p "$MARKER")" == "$VER" ]] && "$BINDIR/aura" | grep -q "aura $VER" && grep -qx "$URL" "$FAKE_STATE/curl.log"
 check "upgrade: a marker with another version reinstalls the pinned release" $?
 rm -f -- "$BINDIR/aura"
 au
@@ -275,11 +275,166 @@ FAKE_NO_USER_BUS=1 au
 [[ "$rc" == 0 && -f "$UNIT" && ! -s "$FAKE_STATE/user-enabled" ]] && grep -q '\[warn\].*systemctl --user enable' "$WORK/out"
 check "no user manager: the unit file is installed, not enabled, the run says how to enable it" $?
 
+# --- M11b: the shortcut map never receives quotes or backslashes ----------------------------------
+reset_state
+bash -c '
+  source "$1/lib/common.sh"
+  HOME="$2" DRY_RUN=0
+  cosmic_shortcut_ensure Alt s "bad\"desc" "Spawn(\"x\")" && exit 10
+  cosmic_shortcut_ensure Alt s desc "Spawn(\"a\\b\")" && exit 11
+  cosmic_shortcut_ensure Alt s "back\\slash" "Spawn(\"x\")" && exit 12
+  cosmic_shortcut_ensure Alt s desc "Spawn(\"a\"b\")" && exit 14
+  cosmic_shortcut_ensure Alt s desc "Spawn(\"/x/aura switcher\")" && exit 0
+  exit 13
+' _ "$REPO_ROOT" "$HOME_DIR" >"$WORK/out" 2>&1
+rc=$?
+[[ "$rc" == 0 ]] && grep -q 'quote\|backslash' "$WORK/out" && [[ "$(flat "$SC")" == '{(modifiers:[Alt,],key:"s",description:Some("desc"),):Spawn("/x/auraswitcher"),}' ]]
+check "cosmic_shortcut_ensure rejects a double quote or backslash in the description or action, and still writes a clean entry" $?
+for h in "$WORK/ho me" "$WORK/ho\"me" "$WORK/ho\\me"; do
+  reset_state
+  AU_HOME="$h" au
+  [[ "$rc" == 0 && ! -e "$h/.config/cosmic/com.system76.CosmicSettings.Shortcuts/v1/custom" && -x "$h/.local/bin/aura" ]] && grep -q '\[warn\].*Alt+S' "$WORK/out"
+  check "shortcut: skipped with a warning when HOME holds whitespace, a quote or a backslash ($h)" $?
+done
+
+# --- M11b: the autostart cleanup matches the Exec basename only ----------------------------------------
+reset_state
+mkdir -p "$HOME_DIR/.config/autostart"
+printf '[Desktop Entry]\nExec=/usr/bin/laura-player --play\n' >"$HOME_DIR/.config/autostart/laura.desktop"
+printf '[Desktop Entry]\nExec=sh -c "echo aura"\n' >"$HOME_DIR/.config/autostart/echo.desktop"
+printf '[Desktop Entry]\nExec=/opt/mauraudio/run\n' >"$HOME_DIR/.config/autostart/maura.desktop"
+printf '[Desktop Entry]\nExec=/home/x/.local/bin/aura\n' >"$HOME_DIR/.config/autostart/plain.desktop"
+printf '[Desktop Entry]\nExec=aura --hidden\n' >"$HOME_DIR/.config/autostart/bare.desktop"
+au
+A="$HOME_DIR/.config/autostart"
+[[ "$rc" == 0 && -e "$A/laura.desktop" && -e "$A/echo.desktop" && -e "$A/maura.desktop" && ! -e "$A/plain.desktop" && ! -e "$A/bare.desktop" ]]
+check "legacy: only entries whose Exec program is aura are removed (laura, mauraudio and an echo of aura stay)" $?
+
+# --- M11b: tarball safety -------------------------------------------------------------------------------------
+# bad_tar <kind>: rebuild the fixture with one hostile member.
+bad_tar() {
+  python3 -I - "$FAKE_STATE/curl-files/$TGZ" "$WORK/pkg" "$DIR" "$1" <<'PYEOF'
+import sys, tarfile, io
+out, pkg, d, kind = sys.argv[1:5]
+t = tarfile.open(out, "w:gz")
+t.add(pkg + "/" + d, arcname=d)
+def member(name, **kw):
+    i = tarfile.TarInfo(name)
+    for k, v in kw.items():
+        setattr(i, k, v)
+    return i
+if kind == "abs":
+    t.addfile(member("/tmp/kcs-evil", size=1), io.BytesIO(b"x"))
+elif kind == "dotdot":
+    t.addfile(member(d + "/../kcs-evil", size=1), io.BytesIO(b"x"))
+elif kind == "symlink-out":
+    t.addfile(member(d + "/evil-link", type=tarfile.SYMTYPE, linkname="/etc/passwd"))
+elif kind == "symlink-dotdot":
+    t.addfile(member(d + "/evil-link", type=tarfile.SYMTYPE, linkname="../../x"))
+elif kind == "hardlink":
+    t.addfile(member(d + "/evil-hard", type=tarfile.LNKTYPE, linkname="/etc/passwd"))
+elif kind == "other-top":
+    t.addfile(member("other-dir/file", size=1), io.BytesIO(b"x"))
+t.close()
+PYEOF
+}
+for kind in abs dotdot symlink-out symlink-dotdot hardlink other-top; do
+  reset_state
+  bad_tar "$kind"
+  AURA_SHA256="$(sha256sum "$FAKE_STATE/curl-files/$TGZ" | awk '{ print $1 }')" au
+  [[ "$rc" != 0 && ! -e "$BINDIR/aura" && ! -e "$MARKER" && ! -e "$WORK/tmp/kcs-evil" && ! -e /tmp/kcs-evil ]] && grep -q 'unsafe' "$WORK/out"
+  check "tarball with a hostile member ($kind): rejected before extracting, nothing installed" $?
+done
+reset_state
+rm -rf -- "$WORK/pkg2" && mkdir -p "$WORK/pkg2" "$WORK/target-dir"
+ln -s "$WORK/target-dir" "$WORK/pkg2/$DIR"
+tar -czf "$FAKE_STATE/curl-files/$TGZ" -C "$WORK/pkg2" "$DIR"
+AURA_SHA256="$(sha256sum "$FAKE_STATE/curl-files/$TGZ" | awk '{ print $1 }')" au
+[[ "$rc" != 0 && ! -e "$BINDIR/aura" && ! -e "$MARKER" ]]
+check "a package directory that is a symlink is rejected" $?
+reset_state
+rm -f -- "$WORK/pkg/$DIR/mpvpaper"
+ln -s /bin/true "$WORK/pkg/$DIR/mpvpaper"
+tar -czf "$FAKE_STATE/curl-files/$TGZ" -C "$WORK/pkg" "$DIR"
+AURA_SHA256="$(sha256sum "$FAKE_STATE/curl-files/$TGZ" | awk '{ print $1 }')" au
+[[ "$rc" != 0 && ! -e "$BINDIR/mpvpaper" && ! -e "$MARKER" ]]
+check "a symlinked mpvpaper in the tarball is rejected" $?
+# A tarball without mpvpaper still installs, and stays installed (no download every run).
+reset_state
+rm -f -- "$WORK/pkg/$DIR/mpvpaper"
+tar -czf "$FAKE_STATE/curl-files/$TGZ" -C "$WORK/pkg" "$DIR"
+AURA_SHA256="$(sha256sum "$FAKE_STATE/curl-files/$TGZ" | awk '{ print $1 }')" au
+[[ "$rc" == 0 && -x "$BINDIR/aura" && ! -e "$BINDIR/mpvpaper" && -f "$MARKER" ]]
+check "a tarball without mpvpaper installs aura only" $?
+AURA_SHA256="$(sha256sum "$FAKE_STATE/curl-files/$TGZ" | awk '{ print $1 }')" au
+[[ "$rc" == 0 ]] && grep -q 'total changes: 0' "$WORK/out" && [[ ! -s "$FAKE_STATE/curl.log" ]]
+check "a tarball without mpvpaper: the second run changes nothing and downloads nothing" $?
+
+# --- M11b: _aura_current checks every artifact -------------------------------------------------------------------
+for victim in "$BINDIR/mpvpaper" "$D" "$SHARE/icons/hicolor/scalable/apps/io.github.antwny.aura.svg" "$SHARE/metainfo/io.github.antwny.aura.metainfo.xml"; do
+  reset_state
+  au
+  rm -f -- "$victim"
+  au
+  [[ "$rc" == 0 && -e "$victim" ]] && grep -qx "$URL" "$FAKE_STATE/curl.log"
+  check "repair: a missing ${victim##*/} is installed again even with the marker present" $?
+done
+
+# --- M11b: an existing binary that this module did not install ---------------------------------------------------
+reset_state
+mkdir -p "$BINDIR"
+printf '#!/bin/sh\necho "Aura Live Wallpaper v1.4.0"\n' >"$BINDIR/aura"
+printf '#!/bin/sh\necho mine\n' >"$BINDIR/mpvpaper"
+chmod +x "$BINDIR/aura" "$BINDIR/mpvpaper"
+au
+[[ "$rc" == 0 ]] && "$BINDIR/aura" | grep -q "aura $VER" && compgen -G "$BINDIR/aura.bak.*" >/dev/null && compgen -G "$BINDIR/mpvpaper.bak.*" >/dev/null
+check "adoption: an older or different aura and mpvpaper without a marker are backed up before being replaced" $?
+au
+[[ "$(find "$BINDIR" -name '*.bak.*' | wc -l)" == 2 ]] && grep -q 'total changes: 0' "$WORK/out"
+check "adoption: once the marker exists no more backups are made" $?
+reset_state
+mkdir -p "$BINDIR"
+printf '#!/bin/sh\necho "Aura Live Wallpaper v9.0.0"\n' >"$BINDIR/aura"
+chmod +x "$BINDIR/aura"
+cp "$BINDIR/aura" "$WORK/newer"
+au
+[[ "$rc" == 0 ]] && cmp -s "$WORK/newer" "$BINDIR/aura" && [[ ! -s "$FAKE_STATE/curl.log" && ! -e "$MARKER" ]] && grep -q '\[warn\].*newer' "$WORK/out" && grep -q 'aura-restore' "$FAKE_STATE/user-enabled"
+check "no downgrade: a newer aura without a marker is kept (warning, no download), the rest of the module still runs" $?
+reset_state
+au
+echo v9.0.0 >"$MARKER"
+au
+[[ "$rc" == 0 && ! -s "$FAKE_STATE/curl.log" ]] && grep -q '\[warn\].*newer' "$WORK/out" && grep -q 'v9.0.0' "$MARKER"
+check "no downgrade: a marker with a newer version is kept (warning, no download)" $?
+
+# --- M11b: the shortcuts seed file is gone, the module builds the map --------------------------------------------------
+[[ ! -e "$REPO_ROOT/files/cosmic/com.system76.CosmicSettings.Shortcuts" ]]
+check "the dead shortcuts seed file is not shipped any more" $?
+
+# --- M11b: aura-restore and its unit ------------------------------------------------------------------------------------
+reset_state
+mkdir -p "$WORK/rt" "$WORK/rhome/.config/aura" "$WORK/rwd"
+: >"$WORK/rt/wayland-0"
+printf '#!/bin/sh\nprintf "%%s\\n" "$@" >"%s/mpv.args"\n' "$WORK" >"$WORK/bin/mpvpaper"
+printf '#!/bin/sh\nexit 1\n' >"$WORK/bin/pgrep"
+chmod +x "$WORK/bin/mpvpaper" "$WORK/bin/pgrep"
+printf '{"current":"-weird.mp4","output":"-eDP-1"}' >"$WORK/rhome/.config/aura/config.json"
+: >"$WORK/rwd/-weird.mp4"
+(cd "$WORK/rwd" && HOME="$WORK/rhome" XDG_RUNTIME_DIR="$WORK/rt" WAYLAND_DISPLAY=wayland-0 PATH="$WORK/bin:$PATH" bash "$REPO_ROOT/files/aura/aura-restore") >"$WORK/out" 2>&1
+tail -n 3 "$WORK/mpv.args" | tr "\n" " " | grep -q "^-- -eDP-1 -weird.mp4 $"
+check "aura-restore passes -- before the output and the wallpaper (values from the config)" $?
+rm -f -- "$WORK/bin/mpvpaper" "$WORK/bin/pgrep"
+grep -q '^StartLimitIntervalSec=' "$REPO_ROOT/files/aura/aura-restore.service" && grep -q '^StartLimitBurst=' "$REPO_ROOT/files/aura/aura-restore.service" &&
+  grep -q '^RestartSec=' "$REPO_ROOT/files/aura/aura-restore.service" && [[ "$(sed -n '/^\[Unit\]/,/^\[Service\]/p' "$REPO_ROOT/files/aura/aura-restore.service" | grep -c '^StartLimit')" == 2 ]]
+check "aura-restore.service: restart limits in [Unit] and a RestartSec" $?
+
 # --- hygiene -----------------------------------------------------------------------------------------------------------------
 ! grep -nE 'curl[^|]*\|[^|]*(ba)?sh' "$REPO_ROOT/modules/60-aura.sh" | grep -q .
 check "the module never pipes a download into a shell" $?
-! grep -q 'install.sh' <(sed -n '/^_aura_download_install/,/^}/p' "$REPO_ROOT/modules/60-aura.sh" | grep -v '^[[:space:]]*#')
+! grep -q 'install.sh' <(sed -n '/^_aura_fetch_install/,/^}/p' "$REPO_ROOT/modules/60-aura.sh" | grep -v '^[[:space:]]*#')
 check "the upstream install.sh of the tarball is not run" $?
+[[ -n "$(sed -n '/^_aura_fetch_install/,/^}/p' "$REPO_ROOT/modules/60-aura.sh")" ]]
+check "hygiene: the function the checks above read exists (they are not vacuous)" $?
 grep '^| aura ' "$REPO_ROOT/README.md" | grep -q 'aura-restore'
 check "README: the aura row has a revert column" $?
 

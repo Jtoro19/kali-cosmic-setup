@@ -25,11 +25,62 @@ _aura_marker() {
   printf '%s/kali-cosmic-setup/aura/version\n' "${XDG_STATE_HOME:-$HOME/.local/state}"
 }
 
-# _aura_current: the pinned version is installed (marker) and its binary exists.
+_aura_share() { printf '%s\n' "${XDG_DATA_HOME:-$HOME/.local/share}"; }
+
+# The marker: line 1 is the installed tag, line 2 says whether the release
+# shipped its own mpvpaper ("mpvpaper=bundled", also assumed for a marker with
+# one line) or not ("mpvpaper=none").
+
+# _aura_current: the pinned version is installed (marker) and every artifact of
+# it exists: aura, mpvpaper (when the release ships one), desktop entry, icon
+# and metainfo.
 _aura_current() {
-  local m
+  local m share ver mp
   m="$(_aura_marker)"
-  [[ -x "$HOME/.local/bin/aura" && -f "$m" && "$(<"$m")" == "$_AURA_VERSION" ]]
+  share="$(_aura_share)"
+  [[ -f "$m" ]] || return 1
+  ver="$(sed -n 1p "$m")"
+  mp="$(sed -n 2p "$m")"
+  [[ "$ver" == "$_AURA_VERSION" && -x "$HOME/.local/bin/aura" ]] || return 1
+  [[ "$mp" == "mpvpaper=none" || -x "$HOME/.local/bin/mpvpaper" ]] || return 1
+  [[ -f "$share/applications/io.github.antwny.aura.desktop" &&
+    -f "$share/icons/hicolor/scalable/apps/io.github.antwny.aura.svg" &&
+    -f "$share/metainfo/io.github.antwny.aura.metainfo.xml" ]]
+}
+
+# _aura_semver_newer <a> <b>: version a is strictly newer than version b.
+_aura_semver_newer() {
+  [[ -n "$1" && "$1" != "$2" && "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n 1)" == "$1" ]]
+}
+
+# _aura_installed_newer: an Aura newer than the pin is already there (recorded in
+# the marker, or reported by the binary itself), so the pin must not downgrade it.
+# `aura --version` prints "Aura Live Wallpaper v1.5.0" and exits; it runs with a
+# time limit and no input.
+_aura_installed_newer() {
+  local m bin="$HOME/.local/bin/aura" have
+  m="$(_aura_marker)"
+  [[ -f "$m" ]] && _aura_semver_newer "$(sed -n 1p "$m")" "$_AURA_VERSION" && return 0
+  if [[ -f "$bin" && -x "$bin" && ! -L "$bin" ]]; then
+    have="$(timeout 5 "$bin" --version </dev/null 2>/dev/null | grep -Eo 'v?[0-9]+\.[0-9]+\.[0-9]+' | head -n 1 || true)"
+    [[ -z "$have" || "$have" == v* ]] || have="v$have"
+    _aura_semver_newer "$have" "$_AURA_VERSION" && return 0
+  fi
+  return 1
+}
+
+# _aura_install_bin <src> <dest>: an executable of the release. It is
+# reproducible, so once the marker exists no .bak is made; a file that is there
+# without the marker (not installed by this module before) is backed up first.
+_aura_install_bin() {
+  local src="$1" dest="$2"
+  if [[ -e "$dest" || -L "$dest" ]] && ! cmp -s -- "$src" "$dest" && [[ ! -f "$(_aura_marker)" ]]; then
+    if user_path_writable "$dest"; then
+      log_info "aura: $dest was not installed by this setup; backing it up before replacing it"
+      backup_file "$dest"
+    fi
+  fi
+  install_file "$src" "$dest" 0755 nobackup
 }
 
 # _aura_install_files <package dir>: the same files and paths as the upstream
@@ -37,13 +88,14 @@ _aura_current() {
 _aura_install_files() {
   local pkg="$1"
   local bin_dir="$HOME/.local/bin"
-  local share="${XDG_DATA_HOME:-$HOME/.local/share}"
-  local desktop line before="$CHANGES"
+  local share desktop line before="$CHANGES"
+  share="$(_aura_share)"
 
-  # Reproducible from the pinned release, so no .bak executables on PATH.
-  install_file "$pkg/aura" "$bin_dir/aura" 0755 nobackup || return 1
+  # Reproducible from the pinned release, so no .bak executables on PATH (an
+  # existing one this setup did not install is backed up once, see above).
+  _aura_install_bin "$pkg/aura" "$bin_dir/aura" || return 1
   if [[ -f "$pkg/mpvpaper" ]]; then
-    install_file "$pkg/mpvpaper" "$bin_dir/mpvpaper" 0755 nobackup || return 1
+    _aura_install_bin "$pkg/mpvpaper" "$bin_dir/mpvpaper" || return 1
   fi
   install_file "$pkg/io.github.antwny.aura.svg" \
     "$share/icons/hicolor/scalable/apps/io.github.antwny.aura.svg" 0644 || return 1
@@ -90,24 +142,65 @@ _aura_fetch_install() {
     return 1
   fi
   log_ok "aura: sha256 verified"
+  _aura_tar_safe "$tarball" "$name" || return 1
   if ! tar -xzf "$tarball" -C "$tmp" --no-same-owner --no-same-permissions; then
     log_error "aura: cannot extract $name.tar.gz"
     return 1
   fi
   pkg="$tmp/$name"
+  if [[ ! -d "$pkg" || -L "$pkg" ]]; then
+    log_error "aura: unexpected tarball layout, $name is not a plain directory (not installing)"
+    return 1
+  fi
   for f in aura io.github.antwny.aura.svg io.github.antwny.aura.metainfo.xml io.github.antwny.aura.desktop; do
     if [[ ! -f "$pkg/$f" || -L "$pkg/$f" ]]; then
       log_error "aura: unexpected tarball layout, $name/$f not found (not installing)"
       return 1
     fi
   done
-  mkdir -p -- "$pkg"
+  if [[ -L "$pkg/mpvpaper" ]]; then
+    log_error "aura: unexpected tarball layout, $name/mpvpaper is a symlink (not installing)"
+    return 1
+  fi
   _aura_install_files "$pkg" || return 1
 
   marker="$(_aura_marker)"
   if user_path_writable "$marker"; then
     mkdir -p -- "$(dirname "$marker")"
-    printf '%s\n' "$_AURA_VERSION" >"$marker"
+    printf '%s\nmpvpaper=%s\n' "$_AURA_VERSION" "$([[ -f "$pkg/mpvpaper" ]] && echo bundled || echo none)" >"$marker"
+  fi
+}
+
+# _aura_tar_safe <tarball> <top dir>: list the members before extracting and
+# refuse anything outside the package directory: absolute names, `..`
+# components, another top-level name, and every member that is not a plain file
+# or directory (a symlink or hard link could point anywhere).
+_aura_tar_safe() {
+  local tarball="$1" top="$2" line name bad=""
+  while IFS= read -r name; do
+    if [[ "$name" == /* || "$name" == ".." || "$name" == ../* || "$name" == */../* || "$name" == */.. ]]; then
+      bad="$name"
+      break
+    fi
+    if [[ "$name" != "$top" && "$name" != "$top"/* ]]; then
+      bad="$name"
+      break
+    fi
+  done < <(tar -tzf "$tarball" 2>/dev/null)
+  if [[ -z "$bad" ]]; then
+    while IFS= read -r line; do
+      case "${line:0:1}" in
+        - | d) ;;
+        *)
+          bad="${line#* }"
+          break
+          ;;
+      esac
+    done < <(tar -tvzf "$tarball" 2>/dev/null)
+  fi
+  if [[ -n "$bad" ]]; then
+    log_error "aura: unsafe member in the archive ($bad): absolute, parent, outside $top/, or a link (not installing)"
+    return 1
   fi
 }
 
@@ -121,6 +214,10 @@ _aura_install() {
   if [[ "$(uname -m)" != "x86_64" ]]; then
     log_error "aura: the release is x86_64 only (this machine is $(uname -m))"
     return 1
+  fi
+  if _aura_installed_newer; then
+    log_warn "aura: a newer Aura than the pinned $_AURA_VERSION is installed; keeping it (this setup never downgrades). Move the pin to update"
+    return 0
   fi
   if [[ "$DRY_RUN" == "1" ]]; then
     printf '[dry-run] would download Aura %s and verify its SHA-256\n' "$_AURA_VERSION"
@@ -164,7 +261,7 @@ _aura_legacy_cleanup() {
   if [[ -d "$autostart" ]]; then
     while IFS= read -r -d '' f; do
       [[ "$f" == "$autostart/aura.desktop" ]] && continue
-      if grep -qE '^Exec=.*aura' "$f"; then
+      if [[ "${f##*/}" == io.github.antwny.aura.desktop ]] || grep -qE '^Exec=([^ ]*/)?(aura|aura-autostart\.sh)([ ]|$)' "$f"; then
         _aura_remove_autostart "$f"
       fi
     done < <(find "$autostart" -maxdepth 1 -name '*.desktop' -print0 | sort -z)
@@ -234,5 +331,12 @@ module_apply() {
 
   # Alt+S: Aura's quick switcher. Only this entry is added to the shared
   # shortcut map (cosmic_shortcut_ensure); a user binding on Alt+S wins.
+  # A HOME with whitespace, a quote or a backslash cannot be written into the
+  # shortcut map (the Spawn string is split on whitespace by COSMIC and RON
+  # strings are not escaped here): skip the shortcut, the rest works.
+  if [[ "$HOME" == *[[:space:]\"\\]* ]]; then
+    log_warn "aura: HOME contains whitespace, a double quote or a backslash, so the Alt+S shortcut is not added (run aura switcher yourself)"
+    return 0
+  fi
   cosmic_shortcut_ensure "Alt" s aurahud "Spawn(\"$HOME/.local/bin/aura switcher\")"
 }

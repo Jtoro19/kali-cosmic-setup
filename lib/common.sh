@@ -1242,6 +1242,22 @@ cosmic_shortcut_ensure() {
   local content trimmed entry tmp state rc=0 m
   local -a mlist
 
+  # The RON strings are written without escaping, and a quote or a backslash
+  # would end a string early or start an escape: refuse them in the modifiers,
+  # key and description, and in the action allow only the quotes that delimit its
+  # own strings (an even count, no backslash), like Spawn("cmd").
+  for m in "$mods" "$key" "$desc"; do
+    if [[ "$m" == *[\"\\]* ]]; then
+      log_error "cosmic_shortcut_ensure: a double quote or backslash is not allowed in the modifiers, key or description: $m"
+      return 1
+    fi
+  done
+  m="${action//[^\"]/}"
+  if [[ "$action" == *\\* || $((${#m} % 2)) -ne 0 ]]; then
+    log_error "cosmic_shortcut_ensure: the action has a backslash or an unbalanced double quote (a quote or backslash inside its string): $action"
+    return 1
+  fi
+
   entry="    ("$'\n'"        modifiers: ["$'\n'
   IFS=, read -ra mlist <<<"$mods"
   for m in "${mlist[@]}"; do entry+="            $m,"$'\n'; done

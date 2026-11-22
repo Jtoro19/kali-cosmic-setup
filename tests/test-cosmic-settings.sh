@@ -52,8 +52,8 @@ shipped_keys() { (cd "$SRC" && find . -type f ! -path "*/$SC" | sed 's|^\./||' |
 check "files/cosmic holds no personal path or placeholder" $?
 [[ -z "$(find "$SRC" -type f \( -name '*font*' -o -name 'xkb_config' -o -name 'system_actions' -o -name '*.bak*' \))" ]]
 check "files/cosmic ships no font, xkb_config, system_actions or backup key" $?
-! grep -q 'aura' "$SRC/$SC"
-check "the shortcuts seed has no Alt+S aura entry (it moves to the aura module)" $?
+[[ ! -e "$SRC/$SC" && ! -e "$SRC/${SC%%/*}" ]]
+check "no shortcuts seed file is shipped (the module builds the map itself)" $?
 [[ -z "$(find "$SRC" -type f -path '*Theme*/v1/*' ! -path '*Theme.Mode/*')" ]]
 check "no stale CosmicTheme v1 keys are shipped (COSMIC 1.11 reads v2)" $?
 
@@ -176,8 +176,8 @@ reset_state
 mkdir -p "$(dirname "$CFG/$SC")"
 printf '{}' >"$CFG/$SC"
 cs
-cmp -s "$SRC/$SC" "$CFG/$SC"
-check "shortcuts: an empty map is replaced by the seed" $?
+[[ "$(tr -d ' \n\t' <"$CFG/$SC")" == '{(modifiers:[Super,Shift,],key:"s",description:Some("cosmic-screenshot"),):Spawn("cosmic-screenshot"),}' ]]
+check "shortcuts: an empty map becomes a map with just the screenshot entry" $?
 reset_state
 mkdir -p "$(dirname "$CFG/$SC")"
 printf 'not a ron map' >"$CFG/$SC"

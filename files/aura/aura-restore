@@ -102,4 +102,4 @@ output="$(cfg '.output // "*"' '*')"
 mkdir -p -- "$runtime/aura"
 rm -f -- "$runtime/aura/mpv_all.sock"
 
-exec "$mpvpaper" -l background -p -o "loop-file=inf --image-display-duration=inf --hwdec=auto-safe --no-config --demuxer-max-bytes=24M --demuxer-readahead-secs=2 --vd-lavc-threads=2 --background-color=#000000 --no-audio --input-ipc-server=$runtime/aura/mpv_all.sock" "$output" "$wall"
+exec "$mpvpaper" -l background -p -o "loop-file=inf --image-display-duration=inf --hwdec=auto-safe --no-config --demuxer-max-bytes=24M --demuxer-readahead-secs=2 --vd-lavc-threads=2 --background-color=#000000 --no-audio --input-ipc-server=$runtime/aura/mpv_all.sock" -- "$output" "$wall"

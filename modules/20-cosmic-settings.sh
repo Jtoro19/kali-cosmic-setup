@@ -12,9 +12,6 @@ MODULE_OPTIN=0
 # shellcheck disable=SC2034
 MODULE_DEPS=""
 
-# The shortcuts file is merged, not copied (see _cosmic_settings_shortcuts).
-_COSMIC_SHORTCUTS="com.system76.CosmicSettings.Shortcuts/v1/custom"
-
 # Keys that are seeded only when missing. The portal rewrites the screenshot
 # state after every screenshot. Dark mode and the accent color belong to the
 # user (Settings) and, when the opt-in aura module is used, to aura: the
@@ -53,7 +50,6 @@ module_apply() {
   done < <(find "$src" -type f -print0 | sort -z)
 
   for rel in "${files[@]}"; do
-    [[ "$rel" == "$_COSMIC_SHORTCUTS" ]] && continue
     dest="$dst/$rel"
     user_path_writable "$dest" || continue
     if [[ " ${_COSMIC_SEED_ONLY[*]} " == *" $rel "* && -e "$dest" ]]; then
