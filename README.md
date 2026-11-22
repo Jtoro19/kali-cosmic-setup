@@ -73,6 +73,7 @@ when named with `--only`.
 | Module | Opt-in | What it does | How to revert |
 |--------|--------|--------------|---------------|
 | desktop | no | COSMIC desktop for a no-desktop Kali install, from the community apt repo `rickysarraf.github.io/debian-cosmic` (key fingerprint verified, apt pin so it can never replace a Kali package): `cosmic-epoch-monorepo` without recommends, greetd (Debian's greetd.service plus a drop-in) with cosmic-greeter as the only display manager, GDM and GNOME Shell purged under guards, PipeWire, BlueZ, NetworkManager, keyring and session base; full upgrade on first run; graphical boot target. Risk: single-maintainer community repo, not supported by Kali or Debian | see "Revert" in `specs/desktop.md`: remove the drop-in, toml, PAM file and daemon unit, reinstall `gdm3 gnome-shell gnome-session`, restore the debconf answer, `/etc/X11/default-display-manager` and the `display-manager.service` link to gdm3, then `sudo apt-get purge cosmic-epoch-monorepo`, remove the repo `.sources`, pin and key, `sudo apt-get update` |
+| locale | no | English system language (`en_US.UTF-8`) with Colombian formats (`es_CO.UTF-8` for dates, numbers, money, paper): `locales` package, only those two locales enabled in `/etc/locale.gen` and generated, values written with `update-locale`. The keyboard is not touched | restore `/etc/default/locale` and `/etc/locale.gen` from their `.bak.<timestamp>` files, then `sudo locale-gen` |
 
 ## Recovery
 
