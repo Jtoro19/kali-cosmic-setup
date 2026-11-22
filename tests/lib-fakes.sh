@@ -101,7 +101,19 @@ for a in "$@"; do
               echo "$dp ${FAKE_DEB_VERSION:-11.4.0}" >>"$FAKE_STATE/versions.new"
               mv -- "$FAKE_STATE/versions.new" "$FAKE_STATE/versions"
               ;;
-            *) echo "$a" >>"$FAKE_STATE/installed" ;;
+            *)
+              # FAKE_NEEDS_UPDATE="pkg ...": these packages cannot be installed
+              # until a successful `apt-get update` (lists-fresh; brave-browser
+              # also needs the Brave sources file to exist at that update).
+              case " ${FAKE_NEEDS_UPDATE:-} " in
+                *" $a "*)
+                  f=lists-fresh
+                  [ "$a" = brave-browser ] && f=lists-fresh-brave
+                  [ -f "$FAKE_STATE/$f" ] || { echo "E: Unable to locate package $a" >&2; exit 100; }
+                  ;;
+              esac
+              echo "$a" >>"$FAKE_STATE/installed"
+              ;;
           esac
         fi
       fi
@@ -112,6 +124,10 @@ done
 if [ "$cmd" = update ] && [ -n "${FAKE_APT_FAIL_UPDATE_NTH:-}" ]; then
   echo x >>"$FAKE_STATE/update.count"
   [ "$(wc -l <"$FAKE_STATE/update.count")" -eq "$FAKE_APT_FAIL_UPDATE_NTH" ] && exit 1
+fi
+if [ "$cmd" = update ]; then
+  touch "$FAKE_STATE/lists-fresh"
+  [ -f "${KCS_ROOT:-}/etc/apt/sources.list.d/brave-browser.sources" ] && touch "$FAKE_STATE/lists-fresh-brave"
 fi
 if [ "$sim" = 1 ]; then
   case "$cmd" in
@@ -140,6 +156,7 @@ EOS
   # curl -fsSL -o <file> <url>: copies $FAKE_KEY_FILE and logs the URL.
   cat >"$bin/curl" <<'EOS'
 #!/bin/sh
+ORIG_ARGS="$*"
 out=""
 url=""
 while [ $# -gt 0 ]; do
@@ -151,6 +168,7 @@ while [ $# -gt 0 ]; do
   shift
 done
 echo "$url" >>"$FAKE_STATE/curl.log"
+echo "$ORIG_ARGS" >>"$FAKE_STATE/curl-args.log"
 [ -n "${FAKE_CURL_FAIL:-}" ] && exit 22
 # $FAKE_STATE/curl-files/<basename of the URL> overrides the default payload.
 if [ -f "$FAKE_STATE/curl-files/${url##*/}" ]; then
@@ -319,12 +337,37 @@ fi
 exec /usr/bin/ln "$@"
 EOS
 
+  # dpkg --compare-versions <a> <op> <b>: ge/gt/le/lt/eq via sort -V (enough for
+  # the version shapes the tests use; the real dpkg runs on Kali).
+  cat >"$bin/dpkg" <<'EOS'
+#!/bin/sh
+[ "$1" = "--compare-versions" ] || exit 2
+a="$2"; op="$3"; b="$4"
+top="$(printf '%s\n%s\n' "$a" "$b" | sort -V | tail -n 1)"
+case "$op" in
+  ge) [ "$a" = "$b" ] || [ "$top" = "$a" ] ;;
+  gt) [ "$a" != "$b" ] && [ "$top" = "$a" ] ;;
+  le) [ "$a" = "$b" ] || [ "$top" = "$b" ] ;;
+  lt) [ "$a" != "$b" ] && [ "$top" = "$b" ] ;;
+  eq) [ "$a" = "$b" ] ;;
+  *) exit 2 ;;
+esac
+EOS
+
   # apt-cache policy <pkg>: "Candidate: (none)" for the packages listed in
   # FAKE_NO_CANDIDATE (space separated), a version for the others.
   cat >"$bin/apt-cache" <<'EOS'
 #!/bin/sh
 for a in "$@"; do pkg="$a"; done
 echo "$pkg:"
+# FAKE_NEEDS_UPDATE: no candidate until the lists were refreshed (see apt-get).
+case " ${FAKE_NEEDS_UPDATE:-} " in
+  *" $pkg "*)
+    f=lists-fresh
+    [ "$pkg" = brave-browser ] && f=lists-fresh-brave
+    [ -f "$FAKE_STATE/$f" ] || FAKE_NO_CANDIDATE="${FAKE_NO_CANDIDATE:-} $pkg"
+    ;;
+esac
 case " ${FAKE_NO_CANDIDATE:-} " in
   *" $pkg "*) echo "  Installed: (none)"; echo "  Candidate: (none)" ;;
   *) echo "  Installed: (none)"; echo "  Candidate: 1.0-1" ;;

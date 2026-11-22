@@ -51,11 +51,12 @@ reset_state() {
 }
 
 # pk <install.sh args...>: run the module. PACKAGES_PEAZIP_SHA256 is the
-# test-only override of the pinned checksum (the fixture is not the real deb).
+# test-only override of the pinned checksum (the fixture is not the real deb);
+# it is honoured only with KCS_TEST=1 (PK_KCS_TEST= empty simulates a real run).
 pk() {
   rm -f -- "${FAKE_STATE:?}"/*.log
   rc=0
-  PATH="$WORK/bin:$PATH" KCS_SKIP_SUDO=1 KCS_SKIP_OS_CHECK=1 XDG_CACHE_HOME="$WORK/cache" \
+  PATH="$WORK/bin:$PATH" KCS_TEST="${PK_KCS_TEST-1}" KCS_SKIP_SUDO=1 KCS_SKIP_OS_CHECK=1 XDG_CACHE_HOME="$WORK/cache" \
     "$REPO_ROOT/install.sh" --only packages "$@" >"$WORK/out" 2>&1 </dev/null || rc=$?
 }
 
@@ -73,6 +74,10 @@ reset_state
 pk --dry-run
 [[ "$rc" == 0 && ! -s "$APT" && ! -s "$FAKE_STATE/curl.log" && ! -e "$KCS_ROOT$KEYRING" ]]
 check "dry-run: exit 0, no apt-get, no download, no key written" $?
+[[ -z "$(ls -A "$TMPDIR")" ]]
+check "dry-run: no temporary directory or file is created" $?
+grep -q 'dry-run.*peazip' "$WORK/out"
+check "dry-run: reports that peazip would be installed" $?
 grep -q 'install packages: .*firefox-esr' "$WORK/out"
 check "dry-run: lists the core packages it would install" $?
 
@@ -91,13 +96,24 @@ installed_has brave-browser
 check "run: brave-browser is installed" $?
 installed_has peazip
 check "run: peazip is installed" $?
-grep -q "^deb-file-present .*/$DEB\$" "$FAKE_STATE/all.log" ||
-  grep -q "deb-file-present" "$FAKE_STATE/all.log"
+grep -q "^deb-file-present .*/$DEB\$" "$FAKE_STATE/all.log"
 check "run: the .deb existed on disk when apt-get installed it" $?
 grep -qx "$BRAVE_KEY_URL" "$FAKE_STATE/curl.log" && grep -qx "$DEB_URL" "$FAKE_STATE/curl.log"
 check "run: the Brave key and the PeaZip .deb come from the official URLs" $?
 [[ -z "$(ls -A "$TMPDIR")" ]]
 check "run: no temporary files are left behind" $?
+# Every download is https-only, TLS 1.2+, with timeouts and a bounded retry.
+[[ "$(wc -l <"$FAKE_STATE/curl-args.log")" -ge 2 ]] &&
+  ! grep -qv -e "--proto =https" "$FAKE_STATE/curl-args.log" &&
+  ! grep -qv -e "--proto-redir =https" "$FAKE_STATE/curl-args.log" &&
+  ! grep -qv -e "--tlsv1.2" "$FAKE_STATE/curl-args.log" &&
+  ! grep -qv -e "--connect-timeout 15" "$FAKE_STATE/curl-args.log" &&
+  ! grep -qv -e "--max-time 600" "$FAKE_STATE/curl-args.log" &&
+  ! grep -qv -e "--retry 2" "$FAKE_STATE/curl-args.log"
+check "downloads: curl is https-only with TLS 1.2, timeouts and --retry 2" $?
+! rg -q 'wget' "$REPO_ROOT/lib/common.sh" "$REPO_ROOT/modules/15-packages.sh" 2>/dev/null &&
+  ! grep -q 'wget -' "$REPO_ROOT/lib/common.sh"
+check "downloads: no wget fallback remains" $?
 
 # Brave repository files.
 [[ -f "$KCS_ROOT$KEYRING" ]]
@@ -166,6 +182,12 @@ check "peazip: the temporary download is removed after a mismatch" $?
 installed_has brave-browser firefox-esr
 check "peazip: Brave and the core list were installed before PeaZip failed" $?
 
+# A real run (no KCS_TEST marker) ignores a PACKAGES_PEAZIP_SHA256 in the environment.
+reset_state
+PK_KCS_TEST='' pk
+[[ "$rc" != 0 ]] && grep -qi 'checksum mismatch' "$WORK/out" && installed_lacks peazip
+check "peazip: PACKAGES_PEAZIP_SHA256 is ignored without the KCS_TEST marker" $?
+
 # The real pinned checksum is used when no override is set: the fixture differs.
 reset_state
 unset PACKAGES_PEAZIP_SHA256
@@ -189,6 +211,89 @@ printf 'peazip 10.9.0\n' >"$FAKE_STATE/versions"
 pk
 grep -qx "$DEB_URL" "$FAKE_STATE/curl.log" && grep -q '^peazip 11.4.0$' "$FAKE_STATE/versions"
 check "peazip: an older installed version is upgraded to the pinned one" $?
+
+reset_state
+printf 'peazip\n' >>"$FAKE_STATE/installed"
+printf 'peazip 11.10.0\n' >"$FAKE_STATE/versions"
+pk
+[[ "$rc" == 0 ]] && ! grep -qx "$DEB_URL" "$FAKE_STATE/curl.log" && grep -q '^peazip 11.10.0$' "$FAKE_STATE/versions"
+check "peazip: a newer installed version (11.10.0 > 11.4.0) is not downgraded" $?
+reset_state
+printf 'peazip\n' >>"$FAKE_STATE/installed"
+printf 'peazip 11.4.0-1\n' >"$FAKE_STATE/versions"
+pk
+! grep -qx "$DEB_URL" "$FAKE_STATE/curl.log"
+check "peazip: 11.4.0-1 counts as the pinned version or newer (dpkg ordering)" $?
+
+# --- a failed update then a re-run: Brave still gets its lists ----------------
+reset_state
+export FAKE_NEEDS_UPDATE=brave-browser
+FAKE_APT_FAIL_UPDATE_NTH=2 pk
+[[ "$rc" != 0 ]] && installed_lacks brave-browser && [[ -f "$KCS_ROOT$KEYRING" ]]
+check "brave: a failed apt-get update fails the module but leaves the repo files" $?
+pk
+[[ "$rc" == 0 ]] && installed_has brave-browser peazip &&
+  grep -q 'apt-get .* update' "$FAKE_STATE/all.log"
+check "brave: the re-run updates again (no candidate) and installs brave-browser" $?
+unset FAKE_NEEDS_UPDATE
+
+# --- wiped lists before the PeaZip runtime dependency ------------------------
+reset_state
+pk
+rm -f "$FAKE_STATE/lists-fresh" "$FAKE_STATE/lists-fresh-brave"
+grep -vx 'peazip\|libgtk2.0-0t64' "$FAKE_STATE/installed" >"$FAKE_STATE/installed.new"
+mv -- "$FAKE_STATE/installed.new" "$FAKE_STATE/installed"
+: >"$FAKE_STATE/versions"
+FAKE_NEEDS_UPDATE=libgtk2.0-0t64 pk
+[[ "$rc" == 0 ]] && installed_has libgtk2.0-0t64 peazip
+check "peazip: the lists are refreshed before the libgtk2.0-0t64 runtime install" $?
+
+# --- the .deb changes between the download check and apt-get install --------
+reset_state
+(
+  export DRY_RUN=0 PATH="$WORK/bin:$PATH" KCS_SKIP_SUDO=1 KCS_SKIP_OS_CHECK=1
+  set +e
+  # shellcheck source=lib/common.sh
+  source "$REPO_ROOT/lib/common.sh"
+  # shellcheck source=modules/15-packages.sh
+  source "$REPO_ROOT/modules/15-packages.sh"
+  # A download that passes its own check, then the file is swapped.
+  download_verified() { printf 'tampered\n' >"$2"; }
+  PACKAGES_PEAZIP_SHA256="$PZ_SUM" KCS_TEST=1 _packages_peazip >"$WORK/tamper.out" 2>&1
+  echo $? >"$WORK/tamper.rc"
+)
+[[ "$(cat "$WORK/tamper.rc")" != 0 ]] && ! grep -q 'deb-file' "$FAKE_STATE/all.log" 2>/dev/null &&
+  grep -qi 'checksum' "$WORK/tamper.out"
+check "peazip: a .deb that no longer matches the sha256 is not passed to apt-get" $?
+
+# --- real gpg: the pub:/fpr: extraction on a real key -------------------------
+if command -v gpg >/dev/null 2>&1; then
+  GH="$(mktemp -d "$WORK/gnupg.XXXXXX")"
+  chmod 0700 "$GH"
+  GNUPGHOME="$GH" gpg --batch --pinentry-mode loopback --passphrase '' \
+    --quick-generate-key 'kcs test <kcs@example.invalid>' ed25519 sign never >/dev/null 2>&1
+  GNUPGHOME="$GH" gpg --batch --export >"$WORK/real.key" 2>/dev/null
+  want_fpr="$(GNUPGHOME="$GH" gpg --batch --with-colons --list-keys 2>/dev/null |
+    awk -F: '/^fpr:/ { print $10; exit }')"
+  got_fpr="$(
+    set -euo pipefail
+    # shellcheck source=lib/common.sh
+    source "$REPO_ROOT/lib/common.sh"
+    LANG=de_DE.UTF-8 _gpg_primary_fingerprints "$WORK/real.key"
+  )"
+  [[ -n "$want_fpr" && "$got_fpr" == "$want_fpr" ]]
+  check "gpg: the real fingerprint extraction returns the primary key fingerprint" $?
+  (
+    set -euo pipefail
+    # shellcheck source=lib/common.sh
+    source "$REPO_ROOT/lib/common.sh"
+    _key_has_fingerprint "$WORK/real.key" "${want_fpr,,}" &&
+      ! _key_has_fingerprint "$WORK/real.key" "$want_fpr AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+  )
+  check "gpg: _key_has_fingerprint accepts the exact fingerprint and rejects a superset" $?
+else
+  printf 'skip - gpg is not installed: real fingerprint extraction not tested\n'
+fi
 
 # --- unrar not available --------------------------------------------------------
 reset_state

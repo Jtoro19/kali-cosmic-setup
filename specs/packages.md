@@ -113,17 +113,33 @@ Dropped, with the reason:
   beyond trusting the GitHub release of `peazip/PeaZip`. Updating needs a new
   version, asset name and checksum in the module.
 - **PeaZip idempotency**: skipped when the installed `peazip` is the pinned
-  version or newer (`sort -V`), so a newer version is never downgraded. An older
+  version or newer (`dpkg --compare-versions "$cur" ge "$want"`, so Debian
+  version ordering such as `11.4.0-1` is right), so a newer version is never downgraded. An older
   one is upgraded with the verified `.deb`.
 - **Download**: `download_verified` (`lib/common.sh`) refuses an empty or
   malformed checksum, downloads into a private temporary directory, compares
   with `sha256sum`, and moves the file into place only on a match. The module
-  keeps the `.deb` in a 0755 directory (apt reads it as `_apt`) and removes it
-  on every outcome, including a failed `apt-get install`.
-- Test-only override `PACKAGES_PEAZIP_SHA256` replaces the pinned checksum so
-  the tests can serve a fixture; it is never set in a real run.
-- `apt-get update` runs only when something is installed or the Brave repo
-  changed (the key, sources or pin file), never on a no-op run.
+  keeps the `.deb` in a 0755 directory (apt reads it as `_apt`), re-checks its
+  SHA-256 right before `apt-get install` (the directory is user-owned, so the
+  file could change after the first check), and removes it on every outcome,
+  including a failed `apt-get install`. Dry-run creates no temporary directory
+  and downloads nothing.
+- All downloads (`download_verified`, `apt_install_key`) use `curl --proto
+  '=https' --proto-redir '=https' --tlsv1.2 --connect-timeout 15 --max-time 600
+  --retry 2`. There is no wget fallback: curl is a prerequisite (the desktop
+  module installs it; this module also ensures `curl ca-certificates` before
+  any download), and a missing curl is a clear error.
+- **Test-only override**: `PACKAGES_PEAZIP_SHA256` replaces the pinned checksum
+  only when `KCS_TEST` is set (the test harness sets it so the tests can serve
+  a fixture). In a real run the variable is ignored and the pinned hash is
+  always used.
+- **Locale**: every parser of tool output runs under `LC_ALL=C` (`gpg
+  --with-colons`, `dpkg-query`, `apt-cache policy`, `lspci`, `systemctl`).
+- `apt-get update` runs when something is installed or the Brave repo changed
+  (key, sources or pin file), and also when `brave-browser` has no apt
+  candidate (a failed earlier update, or wiped lists), so a re-run recovers; it
+  also runs before the PeaZip runtime install when `libgtk2.0-0t64` is
+  missing. A no-op run runs none.
 
 ## Hardware detection
 
@@ -141,8 +157,12 @@ changes: 0` and runs no `apt-get` and no download.
 
 ```bash
 sudo apt-get purge brave-browser brave-keyring peazip
-sudo rm /etc/apt/sources.list.d/brave-browser.sources /etc/apt/preferences.d/brave-browser \
+sudo apt-get autoremove          # review the list first: drops libgtk2.0-0t64 once peazip is gone
+sudo rm -f /etc/apt/sources.list.d/brave-browser.sources /etc/apt/preferences.d/brave-browser \
   /etc/apt/keyrings/brave-browser-archive-keyring.gpg
+# the brave-browser package also drops these (checked on the VM); purge removes
+# its own files, the symlink below is created by its postinst and may stay:
+sudo rm -f /etc/apt/trusted.gpg.d/brave-browser-release.gpg
 sudo apt-get update
 # core packages: purge any you do not want, for example
 sudo apt-get purge <package>      # one at a time; dependencies shared with other software are refused

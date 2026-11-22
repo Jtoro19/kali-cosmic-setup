@@ -51,7 +51,7 @@ PIN
 }
 
 # _packages_brave: key, sources, pin, then the package. The lists are refreshed
-# only when the repo, its key or its pin changed.
+# when the repo, its key or its pin changed, or brave-browser has no candidate.
 _packages_brave() {
   local before="$CHANGES"
   ensure_packages "${_PACKAGES_PREREQS[@]}" || return 1
@@ -60,32 +60,60 @@ _packages_brave() {
   apt_ensure_sources "$_PACKAGES_BRAVE_REPO_NAME" "$_PACKAGES_BRAVE_REPO_URI" stable main \
     "$_PACKAGES_BRAVE_KEY_DEST" || return 1
   apt_ensure_pin "$_PACKAGES_BRAVE_REPO_NAME" "$(_packages_brave_pin)" || return 1
-  if ((CHANGES > before)); then
+  # Refresh when the repo files changed, or when the lists do not know the
+  # package (a failed earlier update, or wiped lists).
+  if ((CHANGES > before)) || ! apt_has_candidate brave-browser; then
     apt_update_once --force || return 1
   fi
   ensure_packages brave-browser
 }
 
+# _packages_sha256_ok <file> <sha256>: true when the file has that SHA-256.
+_packages_sha256_ok() {
+  printf '%s  %s\n' "$2" "$1" | sha256sum -c --status
+}
+
 # _packages_peazip: install the pinned upstream .deb unless this version or a
-# newer one is installed. PACKAGES_PEAZIP_SHA256 is a test-only override of the
-# pinned checksum (the tests serve a fixture, not the real .deb).
+# newer one is installed. PACKAGES_PEAZIP_SHA256 overrides the pinned checksum
+# only when KCS_TEST is set (the tests serve a fixture, not the real .deb); a
+# real run always uses the pinned value.
 _packages_peazip() {
-  local want="${PACKAGES_PEAZIP_SHA256:-$_PACKAGES_PEAZIP_SHA256}" cur dir rc=0
+  local want="$_PACKAGES_PEAZIP_SHA256" cur dir deb rc=0
+  if [[ -n "${KCS_TEST:-}" && -n "${PACKAGES_PEAZIP_SHA256:-}" ]]; then
+    want="$PACKAGES_PEAZIP_SHA256"
+  fi
   cur="$(pkg_version peazip)"
   if pkg_installed peazip && [[ -n "$cur" ]] &&
-    [[ "$(printf '%s\n%s\n' "$_PACKAGES_PEAZIP_VERSION" "$cur" | sort -V | tail -n 1)" == "$cur" ]]; then
+    dpkg --compare-versions "$cur" ge "$_PACKAGES_PEAZIP_VERSION"; then
     return 0
+  fi
+  ensure_packages curl ca-certificates || return 1
+  if ! pkg_installed "${_PACKAGES_PEAZIP_RUNTIME[0]}"; then
+    # The lists may be stale or wiped: the runtime package needs a candidate.
+    apt_update_once || return 1
   fi
   ensure_packages "${_PACKAGES_PEAZIP_RUNTIME[@]}" || return 1
   log_change "install peazip $_PACKAGES_PEAZIP_VERSION from the upstream .deb"
+  if [[ "$DRY_RUN" == "1" ]]; then
+    log_info "[dry-run] would download $_PACKAGES_PEAZIP_URL and verify SHA-256 $want"
+    return 0
+  fi
   dir="$(mktemp -d)"
+  deb="$dir/$_PACKAGES_PEAZIP_DEB"
   # apt reads the file as its unprivileged _apt user: the directory must be
   # traversable and the file readable.
   chmod 0755 "$dir"
-  download_verified "$_PACKAGES_PEAZIP_URL" "$dir/$_PACKAGES_PEAZIP_DEB" "$want" || rc=$?
+  download_verified "$_PACKAGES_PEAZIP_URL" "$deb" "$want" || rc=$?
   if ((rc == 0)); then
-    chmod 0644 "$dir/$_PACKAGES_PEAZIP_DEB" 2>/dev/null || true
-    _apt_get_may_fail install "$dir/$_PACKAGES_PEAZIP_DEB" || rc=$?
+    chmod 0644 "$deb" 2>/dev/null || true
+    # Verify again right before apt reads the file (it sits in a user-owned
+    # directory between the download and the install).
+    if _packages_sha256_ok "$deb" "$want"; then
+      _apt_get_may_fail install "$deb" || rc=$?
+    else
+      log_error "checksum mismatch: the downloaded .deb changed before it was installed; nothing was installed"
+      rc=1
+    fi
   fi
   rm -rf -- "$dir"
   if ((rc != 0)); then

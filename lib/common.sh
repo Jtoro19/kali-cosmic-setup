@@ -431,8 +431,13 @@ download_verified() {
     log_info "[dry-run] would download $url and verify SHA-256 $sum"
     return 0
   fi
+  if ! command -v curl >/dev/null 2>&1; then
+    log_error "download_verified: curl is required (the desktop module installs it)"
+    return 1
+  fi
   tmp="$(mktemp -d)"
-  curl -fsSL -o "$tmp/download" -- "$url" || rc=$?
+  curl -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 --connect-timeout 15 \
+    --max-time 600 --retry 2 -o "$tmp/download" -- "$url" || rc=$?
   if ((rc != 0)); then
     log_error "cannot download $url (exit $rc)"
     rm -rf -- "$tmp"
@@ -455,7 +460,8 @@ download_verified() {
 _gpg_primary_fingerprints() {
   local home
   home="$(mktemp -d)"
-  GNUPGHOME="$home" gpg --batch --show-keys --with-colons -- "$1" 2>/dev/null |
+  # LC_ALL=C: the --with-colons record names must not depend on the locale.
+  GNUPGHOME="$home" LC_ALL=C gpg --batch --show-keys --with-colons -- "$1" 2>/dev/null |
     awk -F: '/^pub:/ { p = 1; next } p && /^fpr:/ { print $10; p = 0 }' || true
   rm -rf -- "$home"
 }
@@ -475,7 +481,7 @@ _key_has_fingerprint() {
 # <dest> (for example /etc/apt/keyrings/x.gpg) only after checking that it has
 # exactly the expected full fingerprint (or, for a keyring holding several
 # keys, exactly the expected set, space or comma separated in one argument). An ASCII-armored key is dearmored.
-# Needs gpg and curl (or wget); the caller installs gnupg and curl first.
+# Needs gpg and curl (https only); the caller installs gnupg and curl first.
 # Returns non-zero, installing nothing, on a download or fingerprint failure.
 # Idempotent: when <dest> already holds that fingerprint nothing is downloaded.
 apt_install_key() {
@@ -488,13 +494,14 @@ apt_install_key() {
     log_change "install key $dest (fingerprint $fpr) from $url"
     return 0
   fi
+  if ! command -v curl >/dev/null 2>&1; then
+    log_error "apt_install_key: curl is required (the desktop module installs it)"
+    return 1
+  fi
   tmp="$(mktemp)"
   keyfile="$(mktemp)"
-  if command -v curl >/dev/null 2>&1; then
-    curl -fsSL -o "$tmp" -- "$url" || rc=$?
-  else
-    wget -q -O "$tmp" -- "$url" || rc=$?
-  fi
+  curl -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 --connect-timeout 15 \
+    --max-time 600 --retry 2 -o "$tmp" -- "$url" || rc=$?
   if ((rc != 0)); then
     log_error "cannot download the key $url (exit $rc)"
     rm -f -- "$tmp" "$keyfile"
@@ -506,7 +513,7 @@ apt_install_key() {
     return 1
   fi
   if grep -q 'BEGIN PGP PUBLIC KEY BLOCK' "$tmp"; then
-    gpg --batch --yes --dearmor -o "$keyfile" -- "$tmp" || rc=$?
+    LC_ALL=C gpg --batch --yes --dearmor -o "$keyfile" -- "$tmp" || rc=$?
   else
     cp -- "$tmp" "$keyfile"
   fi
@@ -580,7 +587,7 @@ system_unit_exists() {
 # `systemctl enable` fails on it).
 system_unit_masked() {
   local state
-  state="$(systemctl is-enabled -- "$1" 2>/dev/null || true)"
+  state="$(LC_ALL=C systemctl is-enabled -- "$1" 2>/dev/null || true)"
   [[ "$state" == masked* ]]
 }
 
@@ -639,7 +646,7 @@ detect_gpu_vendors() {
   local id amd=0 intel=0 nvidia=0 f seen=0
   local -a out=() ids=()
   if command -v lspci >/dev/null 2>&1; then
-    mapfile -t ids < <(lspci -nn 2>/dev/null | grep -E 'VGA|3D|Display' |
+    mapfile -t ids < <(LC_ALL=C lspci -nn 2>/dev/null | grep -E 'VGA|3D|Display' |
       grep -Eo '\[[0-9a-fA-F]{4}:[0-9a-fA-F]{4}\]' | tr 'A-F' 'a-f' | cut -c2-5 || true)
     seen=1
   else
