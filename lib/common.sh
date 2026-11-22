@@ -690,3 +690,127 @@ detect_gpu_vendors() {
   if ((nvidia)); then out+=(nvidia); fi
   printf '%s\n' "${out[*]:-}"
 }
+
+# ensure_ini_line <file> <section> <key=value>: make sure the exact line is
+# present under [section]. Creates the file or section when missing. If the
+# key already exists with a different value, warn and leave it alone, unless
+# the optional 4th argument is "replace", which rewrites that key in place.
+ensure_ini_line() {
+  local file="$1" section="$2" entry="$3" policy="${4:-keep}" key tmp mode="0644" state
+  key="${entry%%=*}"
+  tmp="$(mktemp)"
+  if [[ -f "$file" ]]; then
+    state="$(SEC="[$section]" ENTRY="$entry" KEY="$key" awk '
+      BEGIN { sec = ENVIRON["SEC"]; e = ENVIRON["ENTRY"]; k = ENVIRON["KEY"] }
+      /^\[/ { cur = ($0 == sec) }
+      cur && $0 == e { print "present"; exit }
+      cur && index($0, k "=") == 1 { print "conflict"; exit }
+    ' "$file")"
+    if [[ "$state" == "present" ]]; then
+      rm -f -- "$tmp"
+      return 0
+    fi
+    if [[ "$state" == "conflict" && "$policy" != "replace" ]]; then
+      log_warn "$file: key '$key' under [$section] has another value; leaving it"
+      rm -f -- "$tmp"
+      return 0
+    fi
+    if [[ "$state" == "conflict" ]]; then
+      # policy=replace: rewrite the first matching key in the section.
+      SEC="[$section]" ENTRY="$entry" KEY="$key" awk '
+        BEGIN { sec = ENVIRON["SEC"]; e = ENVIRON["ENTRY"]; k = ENVIRON["KEY"] }
+        /^\[/ { cur = ($0 == sec) }
+        cur && !done && index($0, k "=") == 1 { print e; done = 1; next }
+        { print }
+      ' "$file" >"$tmp"
+      mode="$(stat -c %a -- "$file")"
+      log_change "set '$entry' under [$section] in $file"
+      backup_file "$file"
+      _priv_run "$file" install -m "$mode" -- "$tmp" "$file"
+      rm -f -- "$tmp"
+      return 0
+    fi
+    SEC="[$section]" ENTRY="$entry" awk '
+      BEGIN { sec = ENVIRON["SEC"]; e = ENVIRON["ENTRY"] }
+      { print }
+      $0 == sec && !done { print e; done = 1; found = 1 }
+      END { if (!found) { print ""; print sec; print e } }
+    ' "$file" >"$tmp"
+    mode="$(stat -c %a -- "$file")"
+  else
+    printf '[%s]\n%s\n' "$section" "$entry" >"$tmp"
+  fi
+  log_change "add '$entry' under [$section] in $file"
+  backup_file "$file"
+  _priv_run "$file" mkdir -p -- "$(dirname "$file")"
+  _priv_run "$file" install -m "$mode" -- "$tmp" "$file"
+  rm -f -- "$tmp"
+}
+
+# --- GSettings --------------------------------------------------------------
+
+# _GSETTINGS_PREFIX: command words that put gsettings on a session bus, set by
+# _gsettings_prepare (empty when the environment already has one).
+_GSETTINGS_PREFIX=()
+
+# _gsettings_prepare: find a way to reach a session bus for gsettings/dconf.
+# 1. DBUS_SESSION_BUS_ADDRESS is set (a desktop session): use it as it is.
+# 2. $XDG_RUNTIME_DIR/bus exists (SSH to a user whose systemd user manager runs,
+#    for example a logged-in COSMIC user): point DBUS_SESSION_BUS_ADDRESS at it,
+#    so the values land where the live session reads them.
+# 3. Otherwise (a TTY or SSH login without a user bus): run gsettings under
+#    `dbus-run-session`, a private bus that starts dconf-service, which writes
+#    ~/.config/dconf/user; sessions that start later (or are running: dconf
+#    watches the file) read it. gsettings syncs before it exits, so the daemon
+#    going away with the private bus loses nothing. GIO_USE_VFS=local keeps the
+#    GVfs modules out: on a private bus they would activate gvfsd-fuse and other
+#    daemons that outlive the command and keep its output pipe open.
+# Returns 1 when none of these exists.
+_gsettings_prepare() {
+  local rt="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+  _GSETTINGS_PREFIX=()
+  if [[ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ]]; then
+    return 0
+  fi
+  if [[ -S "$rt/bus" ]]; then
+    _GSETTINGS_PREFIX=(env "DBUS_SESSION_BUS_ADDRESS=unix:path=$rt/bus")
+    return 0
+  fi
+  if command -v dbus-run-session >/dev/null 2>&1; then
+    _GSETTINGS_PREFIX=(env GIO_USE_VFS=local dbus-run-session --)
+    return 0
+  fi
+  return 1
+}
+
+# ensure_gsetting <schema> <key> <value>: set a GSettings key only when the
+# current value differs. <value> uses gsettings' printed form (strings keep
+# their single quotes, for example "'prefer-dark'"). Without gsettings, a way to
+# reach a session bus (see _gsettings_prepare) or the schema, warn and skip
+# without failing. The read is side-effect free, so dry-run is accurate.
+ensure_gsetting() {
+  local schema="$1" key="$2" value="$3" current tmp rc=0
+  if ! command -v gsettings >/dev/null 2>&1; then
+    log_warn "gsettings not found; skipping $schema $key"
+    return 0
+  fi
+  if ! _gsettings_prepare; then
+    log_warn "no session bus and no dbus-run-session; skipping gsettings $schema $key (run it from a desktop session, or install dbus-bin)"
+    return 0
+  fi
+  # The value goes through a file, not a command substitution: a daemon that
+  # outlives gsettings and holds a pipe open would block the substitution.
+  tmp="$(mktemp)"
+  "${_GSETTINGS_PREFIX[@]}" gsettings get "$schema" "$key" >"$tmp" 2>/dev/null </dev/null || rc=$?
+  current="$(<"$tmp")"
+  rm -f -- "$tmp"
+  if ((rc != 0)); then
+    log_warn "cannot read gsettings $schema $key; skipping"
+    return 0
+  fi
+  if [[ "$current" == "$value" ]]; then
+    return 0
+  fi
+  log_change "gsettings set $schema $key $value (was $current)"
+  run "${_GSETTINGS_PREFIX[@]}" gsettings set "$schema" "$key" "$value"
+}

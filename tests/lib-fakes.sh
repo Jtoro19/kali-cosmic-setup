@@ -435,6 +435,42 @@ case " ${FAKE_NO_CANDIDATE:-} " in
 esac
 EOS
 
+  # gsettings get|set <schema> <key> [value]: values live in $FAKE_STATE/gsettings
+  # (default gtk-theme 'Adwaita', color-scheme 'default'); every call is logged
+  # with the session bus address it saw. Like the real one it needs a session bus
+  # (DBUS_SESSION_BUS_ADDRESS) and fails without one; FAKE_GSETTINGS_FAIL=1 makes
+  # every call fail.
+  cat >"$bin/gsettings" <<'EOS'
+#!/bin/sh
+echo "gsettings $* bus=${DBUS_SESSION_BUS_ADDRESS:-none}" >>"$FAKE_STATE/gsettings.log"
+[ -n "${FAKE_GSETTINGS_FAIL:-}" ] && exit 1
+[ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ] || { echo "Unable to autolaunch a dbus-daemon without a $DISPLAY" >&2; exit 1; }
+store="$FAKE_STATE/gsettings"; mkdir -p "$store"
+case "$1" in
+  get)
+    if [ -f "$store/$2.$3" ]; then cat "$store/$2.$3"
+    else case "$3" in gtk-theme) echo "'Adwaita'" ;; color-scheme) echo "'default'" ;; *) echo "''" ;; esac; fi
+    ;;
+  set) printf '%s\n' "$4" >"$store/$2.$3" ;;
+  *) exit 2 ;;
+esac
+EOS
+
+  # dbus-run-session -- <cmd...>: a private session bus for one command (the
+  # address is fake); FAKE_NO_DBUS_RUN=1 makes it fail like a missing program.
+  cat >"$bin/dbus-run-session" <<'EOS'
+#!/bin/sh
+echo "dbus-run-session $*" >>"$FAKE_STATE/gsettings.log"
+[ -n "${FAKE_NO_DBUS_RUN:-}" ] && exit 127
+[ "$1" = "--" ] && shift
+# FAKE_LINGER=1: leave a daemon behind that keeps the output pipe open for a few
+# seconds, like gvfsd-fuse on a private bus.
+[ -n "${FAKE_LINGER:-}" ] && { sleep 4 & }
+DBUS_SESSION_BUS_ADDRESS=unix:path=/private-fake-bus
+export DBUS_SESSION_BUS_ADDRESS
+"$@"
+EOS
+
   chmod +x "$bin"/*
 }
 
