@@ -20,7 +20,9 @@ F="$C/com.system76.CosmicTheme.$T/v2/accent"
 [ -f "$F" ] || F="$SHARE/com.system76.CosmicTheme.$T/v2/accent"
 [ -f "$F" ] || exit 0
 
-hex="$(sed -n 's/.*base: *"#\([0-9A-Fa-f]\{6\}\)[0-9A-Fa-f]*".*/\1/p' "$F" | head -n 1)"
+# The first quoted string of a line must be the `base:` value: this takes the
+# FIRST base on a one-line RON file too (a greedy `.*base:` would take the last).
+hex="$(tr -d '\r' <"$F" | sed -n 's/^[^"]*base: *"#\([0-9A-Fa-f]\{6\}\)[0-9A-Fa-f]*".*/\1/p' | head -n 1)"
 if [ -z "$hex" ]; then
   echo "kitty-cosmic-colors: no base: \"#RRGGBBAA\" color in $F" >&2
   exit 1

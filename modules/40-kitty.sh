@@ -47,7 +47,11 @@ _kitty_colors_units() {
   if ((_KITTY_CHANGED)) || [[ ! -e "$out" ]]; then
     user_path_writable "$out" || return 0
     # Generates cosmic-colors.conf from the accent; exits 0 when there is no theme.
-    run "$bin"
+    # A failure (an accent file in a format this script cannot read) is only the
+    # selection colour: warn, never fail the module.
+    if ! run_may_fail "$bin"; then
+      log_warn "the kitty colour sync ($bin) failed: the selection colour is not synced to the COSMIC accent; the rest of the module continues"
+    fi
   fi
 }
 

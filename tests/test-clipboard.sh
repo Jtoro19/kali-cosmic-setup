@@ -27,7 +27,8 @@ COMMIT=e26fde01c13922e3a65049dafb7d5adfbc52626e
 # HEAD` prints $FAKE_GIT_HEAD (default: the pinned commit). Every call is logged.
 cat >"$WORK/bin/git" <<EOS
 #!/bin/sh
-echo "git \$*" >>"\$FAKE_STATE/git.log"
+echo "git \$* [prompt=\${GIT_TERMINAL_PROMPT:-unset}]" >>"\$FAKE_STATE/git.log"
+[ -n "\${FAKE_GIT_SLEEP:-}" ] && exec sleep "\$FAKE_GIT_SLEEP"
 [ -n "\${FAKE_GIT_FAIL:-}" ] && exit 128
 if [ "\$1" = clone ]; then
   for a in "\$@"; do dest="\$a"; done
@@ -66,7 +67,7 @@ check() { # check <description> <status>
 }
 
 reset_state() {
-  rm -rf -- "${FAKE_STATE:?}" "${KCS_ROOT:?}" "${HOME_DIR:?}" "${WORK:?}/cache"
+  rm -rf -- "${FAKE_STATE:?}" "${KCS_ROOT:?}" "${HOME_DIR:?}" "${WORK:?}/cache" "${WORK:?}/state-home"
   mkdir -p "$FAKE_STATE" "$KCS_ROOT" "$HOME_DIR"
   : >"$FAKE_STATE/installed"
 }
@@ -76,7 +77,7 @@ clip() {
   rm -f -- "${FAKE_STATE:?}"/*.log
   rc=0
   HOME="$HOME_DIR" USER=tester PATH="$WORK/bin:$PATH" KCS_TEST=1 KCS_SKIP_SUDO=1 KCS_SKIP_OS_CHECK=1 \
-    XDG_CACHE_HOME="$WORK/cache" XDG_RUNTIME_DIR="$WORK/run" \
+    XDG_CACHE_HOME="$WORK/cache" XDG_RUNTIME_DIR="$WORK/run" XDG_STATE_HOME="$WORK/state-home" \
     "$REPO_ROOT/install.sh" --only clipboard "$@" >"$WORK/out" 2>&1 </dev/null || rc=$?
 }
 
@@ -140,6 +141,65 @@ check "version: an older installed binary is rebuilt from the pinned tag" $?
 grep -q -- '--user try-restart wl-clip-persist.service' "$FAKE_STATE/systemctl.log"
 check "version: the running user service is restarted after a rebuild" $?
 
+# --- commit marker: the version string alone is not enough ---------------------------------------
+MARK="$WORK/state-home/kali-cosmic-setup/clipboard/wl-clip-persist.commit"
+reset_state
+clip
+[[ "$(<"$MARK")" == "$COMMIT" ]]
+check "marker: the built commit is recorded after the install" $?
+rm -f -- "$MARK"
+clip
+[[ "$rc" == 0 ]] && grep -q 'build --release' "$FAKE_STATE/cargo.log" && [[ "$(<"$MARK")" == "$COMMIT" ]]
+check "marker: a binary that reports 0.5.0 but has no marker is rebuilt from the pin" $?
+printf 'othercommit\n' >"$MARK"
+clip
+grep -q 'build --release' "$FAKE_STATE/cargo.log" && [[ "$(<"$MARK")" == "$COMMIT" ]]
+check "marker: a marker with another commit triggers a rebuild" $?
+clip
+grep -q 'total changes: 0' "$WORK/out" && [[ ! -s "$FAKE_STATE/cargo.log" ]]
+check "marker: version and marker both current: no rebuild, 0 changes" $?
+FAKE_CARGO_FAIL=1 clip
+rm -f -- "$MARK"
+FAKE_CARGO_FAIL=1 clip
+[[ ! -e "$MARK" ]]
+check "marker: a failed build records nothing" $?
+
+# --- clone hardening ---------------------------------------------------------------------------------
+reset_state
+clip
+grep '^git clone' "$FAKE_STATE/git.log" | grep -q 'prompt=0'
+check "clone: GIT_TERMINAL_PROMPT=0 (never asks for credentials)" $?
+reset_state
+FAKE_GIT_SLEEP=20 KCS_NET_TIMEOUT=1 clip
+[[ "$rc" != 0 && ! -e "$BIN" ]]
+check "clone: a hanging git clone is cut off by the timeout and fails the module" $?
+
+# --- starting the unit needs the data-control variable in the user manager --------------------------
+reset_state
+printf 'graphical-session.target\n' >"$FAKE_STATE/user-active"
+FAKE_USER_ENV='PATH=/usr/bin' clip
+[[ "$rc" == 0 ]] && grep -qx 'wl-clip-persist.service' "$FAKE_STATE/user-enabled" && ! grep -qx 'wl-clip-persist.service' "$FAKE_STATE/user-active" &&
+  ! grep -q -- '--user start wl-clip-persist' "$FAKE_STATE/systemctl.log" && grep -q 'log in again to start it' "$WORK/out"
+check "env check: without COSMIC_DATA_CONTROL_ENABLED=1 in the user manager the unit is enabled, not started, and the run says to log in again" $?
+reset_state
+printf 'graphical-session.target\n' >"$FAKE_STATE/user-active"
+clip
+grep -q -- '--user start wl-clip-persist.service' "$FAKE_STATE/systemctl.log" && ! grep -q 'log in again' "$WORK/out"
+check "env check: with the variable present the unit is started" $?
+reset_state
+printf 'graphical-session.target\n' >"$FAKE_STATE/user-active"
+FAKE_USER_ENV='XCOSMIC_DATA_CONTROL_ENABLED=1' clip
+! grep -q -- '--user start wl-clip-persist' "$FAKE_STATE/systemctl.log"
+check "env check: the variable name and value must match exactly" $?
+
+# --- /etc/environment with another value ------------------------------------------------------------
+reset_state
+mkdir -p "$KCS_ROOT/etc"
+printf 'COSMIC_DATA_CONTROL_ENABLED=0\n' >"$ENVF"
+clip
+[[ "$(<"$ENVF")" == 'COSMIC_DATA_CONTROL_ENABLED=0' && "$rc" == 0 ]] && grep -q '\[warn\].*COSMIC_DATA_CONTROL_ENABLED' "$WORK/out"
+check "env file: a line with another value is kept with a warning, no duplicate" $?
+
 # --- pin verification ----------------------------------------------------------------------------
 reset_state
 FAKE_GIT_HEAD=0000000000000000000000000000000000000000 clip
@@ -195,6 +255,9 @@ ln -s "$HOME_DIR/dotfiles/wl-clip-persist.service" "$UNIT"
 clip
 [[ "$rc" == 0 && -L "$UNIT" ]] && cmp -s "$REPO_ROOT/files/clipboard/wl-clip-persist.service" "$HOME_DIR/dotfiles/wl-clip-persist.service"
 check "symlink: a unit file linked into the home directory is written through the link, the link stays" $?
+
+grep -qi 'any wayland client' "$REPO_ROOT/specs/clipboard.md" && grep -qi 'any wayland client' <(grep '^| clipboard ' "$REPO_ROOT/README.md")
+check "spec and README: data-control lets any Wayland client read the clipboard" $?
 
 # --- static ---------------------------------------------------------------------------------------------
 M="$REPO_ROOT/modules/30-clipboard.sh"

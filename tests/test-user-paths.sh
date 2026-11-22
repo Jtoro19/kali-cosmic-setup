@@ -158,6 +158,36 @@ unset FAKE_NOT_OWNED
   ! ls "$U".bak.* >/dev/null 2>&1
 check "install_file, ensure_ini_line, ensure_line, ensure_block, remove_line, remove_exact_block and ensure_file_content skip a file owned by someone else (no write, no sudo, no backup)" $?
 
+# --- ensure_block: a missing end marker ---------------------------------------
+B="$WORK/nomarker.rc"
+printf 'before\n# >>> kali-cosmic-setup:x >>>\nold\nafter the lost end marker\nmore\n' >"$B"
+cp -- "$B" "$WORK/nomarker.orig"
+h "ensure_block '$B' x 'new content'" >"$WORK/o" 2>&1
+rc=$?
+cmp -s "$B" "$WORK/nomarker.orig" && [[ "$rc" == 0 ]] && grep -q '\[warn\].*end marker' "$WORK/o" && ! ls "$B".bak.* >/dev/null 2>&1
+check "ensure_block: a begin marker with no end marker is malformed, warned about and the file is left untouched" $?
+printf 'a\n# >>> kali-cosmic-setup:x >>>\nold\n# <<< kali-cosmic-setup:x <<<\nz\n' >"$B"
+h "ensure_block '$B' x 'new'" >/dev/null 2>&1
+[[ "$(cat "$B")" == $'a\n# >>> kali-cosmic-setup:x >>>\nnew\n# <<< kali-cosmic-setup:x <<<\nz' ]]
+check "ensure_block: a well-formed block is still updated in place" $?
+
+# --- ensure_line: an existing differing value ---------------------------------
+L="$WORK/environment"
+printf 'PATH=/usr/bin\nCOSMIC_DATA_CONTROL_ENABLED=0\n' >"$L"
+h "ensure_line '$L' 'COSMIC_DATA_CONTROL_ENABLED=1'" >"$WORK/o" 2>&1
+[[ "$(cat "$L")" == $'PATH=/usr/bin\nCOSMIC_DATA_CONTROL_ENABLED=0' ]] && grep -q '\[warn\].*COSMIC_DATA_CONTROL_ENABLED' "$WORK/o" && ! ls "$L".bak.* >/dev/null 2>&1
+check "ensure_line: another value of the same KEY= is kept with a warning, no duplicate, no change" $?
+printf 'PATH=/usr/bin\n' >"$L"
+h "ensure_line '$L' 'COSMIC_DATA_CONTROL_ENABLED=1'" >/dev/null 2>&1
+printf 'XCOSMIC_DATA_CONTROL_ENABLED=5\n' >>"$L"
+h "ensure_line '$L' 'COSMIC_DATA_CONTROL_ENABLED=1'" >/dev/null 2>&1
+[[ "$(grep -c '^COSMIC_DATA_CONTROL_ENABLED=1$' "$L")" == 1 ]]
+check "ensure_line: the line is added once, a longer key with the same tail is not the key" $?
+printf 'plain line\n' >"$L"
+h "ensure_line '$L' 'another plain line'" >/dev/null 2>&1
+grep -qx 'another plain line' "$L"
+check "ensure_line: a line without = is appended as before" $?
+
 # --- ensure_gsetting ----------------------------------------------------------
 export DBUS_SESSION_BUS_ADDRESS=unix:path=/fake-session-bus
 GSV="$FAKE_STATE/gsettings"

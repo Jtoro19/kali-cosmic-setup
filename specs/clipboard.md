@@ -53,7 +53,26 @@ in Kali or Debian; tag v0.5.0 is commit `e26fde01c13922e3a65049dafb7d5adfbc52626
    pointed at `/run/user/<uid>` first) the unit is written, nothing is enabled,
    and the module prints the one command to run after logging in.
 5. **The environment line.** COSMIC's data-control protocol is gated by
-   `COSMIC_DATA_CONTROL_ENABLED`; the line applies from the next login.
+   `COSMIC_DATA_CONTROL_ENABLED`; the line applies from the next login. A line
+   with another value of that key is kept with a warning (never duplicated).
+6. **Start only when the variable is there.** The unit is started (or restarted)
+   only when `systemctl --user show-environment` contains
+   `COSMIC_DATA_CONTROL_ENABLED=1`: the user manager takes the value from the
+   login, so right after the module wrote the line the service would run without
+   data-control and exit. Otherwise the unit is only enabled and the run says
+   "log in again to start it".
+7. **Security: data-control is global.** With the protocol enabled, any Wayland client
+   in the session can read (and set) the clipboard, with no focus
+   requirement. That is how a clipboard manager works and the price of
+   persistence; the module does not hide it. Do not run this module if you want
+   Wayland's focus-gated clipboard.
+8. **Clone hardening and skip check.** `GIT_TERMINAL_PROMPT=0` and
+   `timeout -k 10 600` (`KCS_NET_TIMEOUT` overrides, for the tests) on the
+   clone. The build is skipped only when the binary reports the pinned version
+   AND the marker `~/.local/state/kali-cosmic-setup/clipboard/wl-clip-persist.commit`
+   holds the pinned commit (a version string alone proves nothing about the
+   source); the marker is written after the install. Crates still come from
+   crates.io, trusted through the pinned repository's own `Cargo.lock`.
 
 ## Hardware detection
 

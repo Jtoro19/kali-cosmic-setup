@@ -20,49 +20,83 @@ Facts checked on the VM are in `odd/verified-facts.md` section 7: fastfetch
 
 - Packages (Kali): `fastfetch`, `imagemagick`, `git`, `git-lfs`.
 - `~/.config/fastfetch/images/`: image pool, files named `<prefix>-<basename>`.
-- `~/.config/fastfetch/bad/`: images that failed `magick identify` (never deleted).
+- `~/.config/fastfetch/bad/`: images that failed validation (never deleted).
+- `~/.local/state/kali-cosmic-setup/fastfetch/<prefix>.commit`: per-source done markers.
 - A managed block `fastfetch` in the rc file of the login shell (`~/.zshrc` for
   zsh, `~/.bashrc` for bash; another shell gets a warning and no block). The
   legacy unmanaged copy of the snippet (the same lines without the "(kitty only)"
   suffix) is removed first from the same file. The block body is valid bash and zsh.
 - No services or units.
 
-### Image sources
+### Image sources and trust model
 
-All repos are cloned shallow (`--depth 1`) with `GIT_TERMINAL_PROMPT=0` into a
-`mktemp -d` directory under `${TMPDIR:-/tmp}`, removed on exit.
+The pool comes from six third-party GitHub repositories that this project does
+not control. The trust model is therefore explicit:
 
-| Prefix | Repo | Notes |
-|--------|------|-------|
-| `ronin` | Ronin-CK/fastfetchPNG-images | branch `master`, root |
-| `thunder` | Thunder-Blaze/FastfetchPngs | root |
-| `menhoudj` | menhoudj/my-fastfetch-config | `logos/` |
-| `themes` | CheikhNaro/ffthemes | root |
-| `mahe` | Maheswara660/fastfetch | `images/`, Git LFS (`git lfs pull`) |
-| `sofija` | sofijacom/dotfiles-fastfetch | `png/` |
+- **Pinned.** Every source is fetched by a commit sha (`git init`, `remote add`,
+  `fetch --depth 1 origin <sha>`, `checkout FETCH_HEAD`) and `git rev-parse HEAD`
+  must equal the pin. A source whose pin cannot be fetched (the repository is
+  gone, the commit was removed) or does not check out warns and is skipped; the
+  other sources and the rest of the module are unaffected, and the skipped source
+  is retried on the next run (not counted as a change).
+- **Not trusted as code or as images.** Nothing from a repository is executed.
+  Candidate files are decoded by ImageMagick forced to the format of the
+  extension (`PNG:`, `JPEG:`, `WEBP:` prefixes, so the content is never guessed
+  and a `.png` that is not a PNG is rejected), first frame only (`[0]`), under
+  `-limit memory 256MiB -limit map 512MiB -limit disk 1GiB -limit time 60` and
+  `timeout -k 5 90`, and re-encoded (shrunk to at most 600x600) into a staging
+  directory. Metadata and trailing data do not survive. Files that fail go to
+  `~/.config/fastfetch/bad` and are never used.
+- **Bounded.** `timeout -k 10 300` on `git fetch` and `git lfs pull`
+  (`KCS_NET_TIMEOUT`); a checkout larger than 512 MiB
+  (`FASTFETCH_MAX_SOURCE_KB`), more than 400 candidate images per source
+  (`FASTFETCH_MAX_FILES`) or a file larger than 5 MiB (`FASTFETCH_MAX_FILE_BYTES`)
+  is skipped or ignored with a warning. The fetch size itself is only bounded by
+  the timeout (git offers no portable cap on a by-sha shallow fetch).
+- **Scratch area** under `${XDG_CACHE_HOME:-~/.cache}/kali-cosmic-setup`, never
+  the (often tmpfs) `/tmp`; removed on exit.
+- **Staged, then moved.** Validated files are copied into
+  `~/.config/fastfetch/.incoming-<prefix>` (same filesystem as the pool) and
+  renamed into `images/` one by one (`mv -n`: an existing file is never
+  overwritten); the per-source marker
+  `~/.local/state/kali-cosmic-setup/fastfetch/<prefix>.commit`, holding the pinned
+  commit, is written last. An interrupted run has no marker, so the next run
+  repeats that source: files already in the pool are kept, the rest is added and
+  leftovers of the staging directory are removed.
 
-`*.png`, `*.jpg`, `*.jpeg`, `*.webp` (any case) are copied with
-`cp --update=none`, excluding `*/.git/*` and `loli*`. New files are resized with
-`magick mogrify -resize '600x600>'` and validated with `magick identify`; invalid
-ones go to `bad/`. A source is done once any `<prefix>-*` file exists in `images`
-or `bad`, so a second run clones nothing.
+| Prefix | Repo | Pinned commit | Notes |
+|--------|------|---------------|-------|
+| `ronin` | Ronin-CK/fastfetchPNG-images | `fb4d6bb8fae85c99cb113afabcb711efe83d39c5` | head of `master`, root |
+| `thunder` | Thunder-Blaze/FastfetchPngs | `2619f112c2d7fc1514f098b6a9fc16fe20ff5124` | root |
+| `menhoudj` | menhoudj/my-fastfetch-config | `ce85cb63c7d89653accff5ab8535dca65aa4d0b5` | `logos/` |
+| `themes` | CheikhNaro/ffthemes | `f154ff8f9447fb6876c1b60e4b6023d6b16c53c9` | root |
+| `mahe` | Maheswara660/fastfetch | `2df4f8b517ae2dae11d350cac146fc4c65d88540` | `images/`, Git LFS (`git lfs pull`; a failed pull leaves no marker so it is retried) |
+| `sofija` | sofijacom/dotfiles-fastfetch | `9a661c2602f8f3eba92632a855a29147b308451b` | `png/` |
+
+The pins are the heads on 2026-11-22 (`git ls-remote`). `*.png`, `*.jpg`,
+`*.jpeg`, `*.webp` (any case) are considered, excluding `*/.git/*` and `loli*`;
+the pool file is `<prefix>-<name>` with unusual characters replaced by `_`.
+Moving a pin fetches that source again and adds only the new images.
 
 ## Decisions on ambiguities
 
-1. **Follow eos, fetch at run time.** The pool comes from third-party repos that
-   this project does not control (they mix anime art, logos and game characters);
-   it is fetched into the user's home only, never committed, and a gone or
-   offline repo only warns (the module still succeeds). `FASTFETCH_SKIP_IMAGES=1`
-   skips the pool.
+1. **Follow eos, fetch at run time, but pinned.** The pool is fetched into the
+   user's home only, never committed. eos cloned the moving default branch; the
+   port pins each source (see the trust model) so a repository takeover or a
+   force-push cannot change what is decoded on your machine without a change to
+   this repository. A gone or offline repo only warns (the module succeeds).
+   `FASTFETCH_SKIP_IMAGES=1` skips the pool.
 2. **`--kitty` is still valid** in fastfetch 2.69 (verified), so the block keeps
    `fastfetch --kitty "$img" --logo-width 20`; with an empty pool it runs plain
-   `fastfetch`.
+   `fastfetch`. The block ends with `unset img`, so the variable does not leak
+   into the interactive shell.
 3. **rc file by login shell** (see specs/kitty.md decision 4). The managed block
-   goes after the kitty module's block in the same file.
+   goes after the kitty module's block in the same file. The legacy unmanaged
+   snippet (without `unset img`) is still recognised and removed.
 4. **Third-party content.** Files named `loli*` are excluded; review the folder and
-   delete what you do not want (a deleted source with no files left is fetched
-   again on the next run: keep at least one file per prefix, or set
-   `FASTFETCH_SKIP_IMAGES=1`).
+   delete what you do not want. A source is complete once its marker holds the
+   pinned commit, so images you delete are not fetched again (until the pin
+   moves).
 
 ## Hardware detection
 
@@ -78,14 +112,17 @@ link pointing elsewhere is not filled).
 
 ## Idempotency check
 
-Packages when missing; a source only when no `<prefix>-*` file exists; the block
-only when its text differs. A second run reports `total changes: 0`.
+Packages when missing; a source only when its marker does not hold the pinned
+commit; the block only when its text differs. A second run reports `total changes: 0`.
 
 ## Revert
 
-Remove the `fastfetch` block from the rc file (or restore its backup),
-`rm -r ~/.config/fastfetch/images ~/.config/fastfetch/bad`,
-`sudo apt-get purge fastfetch`.
+Remove the `fastfetch` block from the rc file. To get the legacy unmanaged
+snippet back, restore the rc file from the `.bak.<timestamp>` made when the
+module removed it. `rm -r ~/.config/fastfetch/images ~/.config/fastfetch/bad
+~/.local/state/kali-cosmic-setup/fastfetch`,
+`sudo apt-get purge fastfetch imagemagick git-lfs` (only if nothing else needs
+them; `git` is kept).
 
 ## Verification
 

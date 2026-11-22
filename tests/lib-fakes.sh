@@ -237,14 +237,21 @@ echo "$*" >>"$FAKE_STATE/systemctl.log"
 # call first and only then fails, so a failed call still shows in the logs.
 case "|${FAKE_FAIL:-}|" in *"|systemctl $*|"*) exit 1 ;; esac
 # `systemctl --user ...`: the user manager. FAKE_NO_USER_BUS=1 means there is none
-# (show-environment fails). State: $FAKE_STATE/user-enabled and user-active;
+# (show-environment fails; FAKE_USER_ENV sets its output). State: $FAKE_STATE/user-enabled and user-active;
 # `enable --now` also marks the unit active.
 if [ "$1" = "--user" ]; then
   shift
   ucmd="$1"
   shift
   case "$ucmd" in
-    show-environment) [ -n "${FAKE_NO_USER_BUS:-}" ] && exit 1; exit 0 ;;
+    show-environment)
+      [ -n "${FAKE_NO_USER_BUS:-}" ] && exit 1
+      # FAKE_USER_ENV: the environment of the user manager (default: the one a
+      # login after the data-control line has).
+      printf '%s\n' "${FAKE_USER_ENV-PATH=/usr/bin
+COSMIC_DATA_CONTROL_ENABLED=1}"
+      exit 0
+      ;;
     is-enabled | is-active)
       for a in "$@"; do unit="$a"; done
       f=user-enabled

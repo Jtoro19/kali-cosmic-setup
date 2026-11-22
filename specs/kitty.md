@@ -70,6 +70,16 @@ generated and not shipped. kitty 0.48.2 from Kali (the config needs 0.46+).
    colours are generated; enabling the path unit is skipped with a warning that
    names the command to run after logging in.
 6. Background blur depends on the compositor (harmless if ignored).
+7. **The copied `system_actions` map can go stale.** The module copies the shipped
+   map once. A COSMIC update that adds or changes actions in
+   `/usr/share/cosmic/.../system_actions` is NOT picked up, because the user key
+   replaces the whole map. After a COSMIC upgrade compare the two files, or
+   restore the `.bak` and run the module again to regenerate it.
+8. **A colour-sync failure only warns.** The accent colour is cosmetic: if
+   `kitty-cosmic-colors.sh` fails (an accent file in a format it cannot read) the
+   module warns and carries on (alias, default terminal, mimeapps are still
+   written). The script takes the FIRST `base: "#RRGGBBAA"` of the file, also on a
+   one-line RON file or with CRLF line endings.
 
 ## Hardware detection
 

@@ -29,6 +29,16 @@ _CLIP_BUILD_DEPS=(cargo rustc git gcc ca-certificates)
 _CLIP_BIN_CHANGED=0
 _CLIP_SRC=""
 
+# Git never asks for credentials, and the clone is cut off after this many
+# seconds (KCS_NET_TIMEOUT overrides it, for the tests).
+export GIT_TERMINAL_PROMPT=0
+_clip_timeout() { echo "${KCS_NET_TIMEOUT:-600}"; }
+
+# The build marker (user state): the commit the installed binary was built from.
+_clip_marker() {
+  printf '%s/kali-cosmic-setup/clipboard/wl-clip-persist.commit\n' "${XDG_STATE_HOME:-$HOME/.local/state}"
+}
+
 # EXIT trap: the checkout and its target directory are build artifacts. The trap
 # swallows failures so it never changes the module's exit status.
 _clip_cleanup() {
@@ -50,9 +60,12 @@ _clip_version() {
 # build with the locked dependency set and install the binary. Skipped when the
 # installed binary already reports the pinned version.
 _clip_binary() {
-  local bin head
+  local bin head marker
   bin="$(rootpath "$_CLIP_BIN")"
-  if [[ "$(_clip_version "$bin")" == "$_CLIP_VERSION" ]]; then
+  marker="$(_clip_marker)"
+  # Current only when the binary reports the pinned version AND the marker holds
+  # the pinned commit (a version string alone says nothing about the source).
+  if [[ "$(_clip_version "$bin")" == "$_CLIP_VERSION" && -f "$marker" && "$(<"$marker")" == "$_CLIP_COMMIT" ]]; then
     return 0
   fi
   ensure_packages "${_CLIP_BUILD_DEPS[@]}" || return 1
@@ -65,7 +78,7 @@ _clip_binary() {
   _CLIP_SRC="${XDG_CACHE_HOME:-$HOME/.cache}/kali-cosmic-setup/src/wl-clip-persist"
   rm -rf -- "$_CLIP_SRC"
   mkdir -p -- "$(dirname "$_CLIP_SRC")"
-  run git clone --depth 1 --quiet --branch "$_CLIP_TAG" "$_CLIP_REPO" "$_CLIP_SRC"
+  run timeout -k 10 "$(_clip_timeout)" git clone --depth 1 --quiet --branch "$_CLIP_TAG" "$_CLIP_REPO" "$_CLIP_SRC"
   head="$(git -C "$_CLIP_SRC" rev-parse HEAD)"
   if [[ "$head" != "$_CLIP_COMMIT" ]]; then
     log_error "wl-clip-persist $_CLIP_TAG is commit ${head:-unknown}, not the pinned $_CLIP_COMMIT: refusing to build it"
@@ -77,11 +90,15 @@ _clip_binary() {
   _CLIP_BIN_CHANGED=1
   rm -rf -- "$_CLIP_SRC"
   _CLIP_SRC=""
+  if user_path_writable "$marker"; then
+    mkdir -p -- "$(dirname "$marker")"
+    printf '%s\n' "$_CLIP_COMMIT" >"$marker"
+  fi
 }
 
 # _clip_unit: the user unit, enabled and started in a graphical session.
 _clip_unit() {
-  local unit="$HOME/.config/systemd/user/wl-clip-persist.service" changed=0 name=wl-clip-persist.service
+  local unit="$HOME/.config/systemd/user/wl-clip-persist.service" changed=0 name=wl-clip-persist.service env_now
   install_file "$REPO_ROOT/files/clipboard/wl-clip-persist.service" "$unit" 0644 || return 1
   if ((FILE_CHANGED || _CLIP_BIN_CHANGED)); then
     changed=1
@@ -98,7 +115,13 @@ _clip_unit() {
     run systemctl --user enable "$name"
   fi
   if systemctl --user is-active --quiet graphical-session.target >/dev/null 2>&1; then
-    if ! systemctl --user is-active --quiet "$name" >/dev/null 2>&1; then
+    # The service needs the data-control variable in the user manager's
+    # environment, which only a login after /etc/environment has it. (Captured
+    # first: no early-exit grep on a pipe under pipefail.)
+    env_now="$(systemctl --user show-environment 2>/dev/null || true)"
+    if ! grep -qx 'COSMIC_DATA_CONTROL_ENABLED=1' <<<"$env_now"; then
+      log_warn "COSMIC_DATA_CONTROL_ENABLED=1 is not in this session's user environment yet: log in again to start it ( is enabled and starts with your next graphical session)"
+    elif ! systemctl --user is-active --quiet "$name" >/dev/null 2>&1; then
       log_change "start user unit: $name"
       run systemctl --user start "$name"
     elif ((changed)); then

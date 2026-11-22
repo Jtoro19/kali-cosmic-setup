@@ -312,6 +312,11 @@ ensure_line() {
   if [[ -f "$file" ]] && grep -qxF -- "$line" "$file"; then
     return 0
   fi
+  # KEY=value with an existing KEY= line of another value: keep it, no duplicate.
+  if [[ "$line" == [A-Za-z_]*=* && -f "$file" ]] && grep -q -- "^${line%%=*}=" "$file"; then
+    log_warn "$file already sets ${line%%=*} to another value: leaving it (wanted: $line)"
+    return 0
+  fi
   log_change "add line to $file: $line"
   backup_file "$file"
   _priv_run "$file" mkdir -p -- "$(dirname "$file")"
@@ -340,6 +345,11 @@ ensure_block() {
   tmp="$(mktemp)"
 
   if [[ -f "$file" ]] && grep -qxF -- "$begin" "$file"; then
+    if ! grep -qxF -- "$end" "$file"; then
+      rm -f -- "$tmp"
+      log_warn "$file has the begin marker of block '$name' but no end marker: malformed, leaving the file untouched (fix or remove the marker line by hand)"
+      return 0
+    fi
     current="$(awk -v b="$begin" -v e="$end" \
       '$0 == e { f = 0 } f { print } $0 == b { f = 1 }' "$file")"
     if [[ "$current" == "$content" ]]; then

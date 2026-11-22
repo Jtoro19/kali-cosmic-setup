@@ -132,6 +132,28 @@ check "colors: a v2 file with no hex base fails with a message" $?
 grep -q 'no base' "$WORK/err"
 check "colors: the message names the problem" $?
 
+reset_state
+mkdir -p "$CFG/cosmic/com.system76.CosmicTheme.Dark/v2"
+printf '( base: "#112233FF", hover: "#63BAC6FF", on: "#000000FF", base: "#AABBCCFF", )\n' >"$CFG/cosmic/com.system76.CosmicTheme.Dark/v2/accent"
+run_colors
+grep -qx 'selection_background #112233' "$CFG/kitty/cosmic-colors.conf"
+check "colors: with several base: entries on one line the FIRST one is the accent" $?
+printf '(\n    base: "#445566FF",\n    hover: "#63BAC6FF",\n    base: "#AABBCCFF",\n)\n' >"$CFG/cosmic/com.system76.CosmicTheme.Dark/v2/accent"
+run_colors
+grep -qx 'selection_background #445566' "$CFG/kitty/cosmic-colors.conf"
+check "colors: with several base: lines the first one is the accent" $?
+printf '(\r\n    base: "#778899FF",\r\n)\r\n' >"$CFG/cosmic/com.system76.CosmicTheme.Dark/v2/accent"
+run_colors
+grep -qx 'selection_background #778899' "$CFG/kitty/cosmic-colors.conf"
+check "colors: a CRLF accent file is parsed" $?
+mkdir -p "$CFG/cosmic/com.system76.CosmicTheme.Mode/v1"
+printf 'false' >"$CFG/cosmic/com.system76.CosmicTheme.Mode/v1/is_dark"
+mkdir -p "$CFG/cosmic/com.system76.CosmicTheme.Light/v2"
+printf '( base: "#ffffffFF", hover: "#000000FF", )\n' >"$CFG/cosmic/com.system76.CosmicTheme.Light/v2/accent"
+run_colors
+[[ "$(sed -n 1p "$CFG/kitty/cosmic-colors.conf")" == 'selection_background #ffffff' && "$(sed -n 2p "$CFG/kitty/cosmic-colors.conf")" == 'selection_foreground #000000' ]]
+check "colors: Light single-line RON with a white accent gives black text" $?
+
 # --- dry-run ----------------------------------------------------------------------------------------
 reset_state
 kt --dry-run
@@ -226,6 +248,15 @@ kt
 [[ "$rc" == 0 && ! -e "$SA_DIR/system_actions" ]] && grep -qi 'system_actions' "$WORK/out"
 check "no shipped map: no partial map is written, the run warns" $?
 
+# --- a failing colour sync only warns -----------------------------------------------------------------------------
+reset_state
+mkdir -p "$CFG/cosmic/com.system76.CosmicTheme.Dark/v2"
+printf '( base: ( red: 0.38 ) )\n' >"$CFG/cosmic/com.system76.CosmicTheme.Dark/v2/accent"
+kt
+[[ "$rc" == 0 ]] && grep -q '\[warn\].*colou\?r' "$WORK/out" && ! grep -q '\[error\]' "$WORK/out" &&
+  grep -qxF "$ALIAS" "$HOME_DIR/.zshrc" && [[ -f "$SA_DIR/system_actions" && -f "$CFG/cosmic-mimeapps.list" ]]
+check "colour sync failure: the module warns and still finishes (alias, system_actions, mimeapps written), exit 0" $?
+
 # --- mimeapps with another default ---------------------------------------------------------------------------------------
 reset_state
 mkdir -p "$CFG"
@@ -267,6 +298,10 @@ check "symlink: an rc file linked into the home directory gets the block through
 check "symlink: a kitty.conf linked outside the home directory is skipped with a warning, the link is not replaced" $?
 
 # --- static --------------------------------------------------------------------------------------------------------------------------
+grep -qi 'stale' "$REPO_ROOT/specs/kitty.md" && grep -q 'system_actions' <(grep -i 'stale' "$REPO_ROOT/specs/kitty.md")
+check "spec: notes that the copied system_actions map can go stale after COSMIC updates" $?
+grep '^| kitty ' "$REPO_ROOT/README.md" | grep -q 'system_actions.bak'
+check "README: the kitty revert restores system_actions from its .bak (it never just deletes the key)" $?
 grep '^| kitty ' "$REPO_ROOT/README.md" | grep -q 'kitty-cosmic-colors.path'
 check "README: the kitty row has a revert column" $?
 ! LC_ALL=C grep -q '[^ -~]' "$SRC/kitty-cosmic-colors.sh"
