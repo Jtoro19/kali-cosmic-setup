@@ -5,7 +5,8 @@
 # real system and never downloads.
 # `! cmd; check $?` is deliberate: check reads the inverted status.
 # SC2030/SC2031: sections that run in a ( ) subshell do so on purpose.
-# shellcheck disable=SC2251,SC2319,SC2030,SC2031
+# SC2016: the fake commands are written as single-quoted scripts on purpose.
+# shellcheck disable=SC2251,SC2319,SC2030,SC2031,SC2016
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -18,6 +19,36 @@ export FAKE_STATE="$WORK/state"
 export KCS_ROOT="$WORK/root"
 export TMPDIR="$WORK/tmp"
 make_fakes "$WORK/bin"
+
+# Extra fakes for this module. mv, install and rm pass through to the real
+# command unless FAKE_FAIL_<CMD>_MATCH is set and an argument contains it (an
+# rm only fails on a path that exists); uname -m answers FAKE_UNAME_M; df
+# answers FAKE_DF_KB; ss prints $FAKE_STATE/ss-out; sleep does nothing.
+for c in mv install rm; do
+  real="$(command -v "$c")"
+  cat >"$WORK/bin/$c" <<EOS
+#!/bin/sh
+m="\${FAKE_FAIL_${c^^}_MATCH:-}"
+if [ -n "\$m" ]; then
+  for a in "\$@"; do
+    case "\$a" in
+      *"\$m"*)
+        if [ "$c" = rm ] && [ ! -e "\$a" ]; then continue; fi
+        echo "fake $c failing on \$a" >&2
+        exit 7
+        ;;
+    esac
+  done
+fi
+exec $real "\$@"
+EOS
+done
+real="$(command -v uname)"
+printf '#!/bin/sh\nif [ "$1" = -m ] && [ -n "${FAKE_UNAME_M:-}" ]; then echo "$FAKE_UNAME_M"; exit 0; fi\nexec %s "$@"\n' "$real" >"$WORK/bin/uname"
+printf '#!/bin/sh\necho Avail\necho "${FAKE_DF_KB:-999999999}"\n' >"$WORK/bin/df"
+printf '#!/bin/sh\necho "$*" >>"$FAKE_STATE/ss.log"\ncat "$FAKE_STATE/ss-out" 2>/dev/null\nexit 0\n' >"$WORK/bin/ss"
+printf '#!/bin/sh\nexit 0\n' >"$WORK/bin/sleep"
+chmod +x "$WORK/bin"/*
 
 failures=0
 check() { # check <description> <status>
@@ -47,6 +78,7 @@ mk_archives() {
   cat >"$d/base/bin/ollama" <<EOS
 #!/bin/sh
 echo "ollama \$*" >>"\$FAKE_STATE/ollama-calls.log"
+echo "\${OLLAMA_HOST:-unset}" >>"\$FAKE_STATE/ollama-host.log"
 echo "Warning: could not connect to a running Ollama instance" >&2
 echo "Warning: client version is $VER" >&2
 EOS
@@ -263,6 +295,181 @@ printf 'not a directory\n' >"$KCS_ROOT/usr/local"
 pai
 [[ "$rc" != 0 && -z "$(ls -A "$TMPDIR")" && -z "$(ls -A "$KCS_ROOT/var/tmp" 2>/dev/null)" ]]
 check "cleanup: the download directory is removed when an install step exits" $?
+
+
+# --- W1: never downgrade on AMD; overlay ROCm only at the pinned version ----------
+reset_state
+pai
+printf '#!/bin/sh\necho "ollama version is 0.99.1"\n' >"$PREFIX/bin/ollama"
+echo "0.99.1 generic" >"$PREFIX/lib/ollama/.kali-cosmic-setup"
+echo keep >"$PREFIX/lib/ollama/libkeep.so"
+printf 'ollama.service\n' >"$FAKE_STATE/enabled"
+printf 'ollama.service\n' >"$FAKE_STATE/active"
+PACKAGES_AI_GPU_VENDORS=amd pai
+[[ "$rc" == 0 && ! -s "$FAKE_STATE/curl.log" && -f "$PREFIX/lib/ollama/libkeep.so" && ! -e "$PREFIX/lib/ollama/rocm" ]] &&
+  [[ "$("$PREFIX/bin/ollama" --version)" == *0.99.1* ]]
+check "amd + newer: an installed 0.99.1 is neither downgraded nor reinstalled with ROCm" $?
+grep -qi 'ROCm' "$WORK/out" && grep -q '0.99.1' "$WORK/out"
+check "amd + newer: the run warns that ROCm cannot be added to a newer install" $?
+grep -q 'total changes: 0' "$WORK/out" && ! grep -qs '^restart' "$FAKE_STATE/systemctl.log"
+check "amd + newer: nothing changed, so no restart" $?
+
+# --- W2: swap through lib/ollama.old, restored on failure --------------------------
+old_install() { # an installed 0.30.0 with a stale library and a running service
+  reset_state
+  mkdir -p "$PREFIX/bin" "$PREFIX/lib/ollama"
+  printf '#!/bin/sh\necho "ollama version is 0.30.0"\n' >"$PREFIX/bin/ollama"
+  chmod +x "$PREFIX/bin/ollama"
+  echo stale >"$PREFIX/lib/ollama/libstale.so"
+  printf 'ollama.service\n' >"$FAKE_STATE/enabled"
+  printf 'ollama.service\n' >"$FAKE_STATE/active"
+}
+old_install
+FAKE_FAIL_MV_MATCH=".ollama-stage/lib/ollama" pai
+[[ "$rc" != 0 && -f "$PREFIX/lib/ollama/libstale.so" && "$("$PREFIX/bin/ollama" --version)" == *0.30.0* ]] &&
+  [[ ! -e "$PREFIX/lib/ollama.old" && ! -e "$PREFIX/lib/ollama/libggml-cpu.so" ]]
+check "swap: a failing mv of the new libraries keeps the old install working (lib restored, no .old left)" $?
+! grep -qs '^restart' "/systemctl.log" && [[ ! -e "" ]]
+check "swap: a failed swap restarts nothing and writes no unit" $?
+[[ -z "$(ls -A "$TMPDIR")" ]] && ! compgen -G "$PREFIX/.ollama-stage*" >/dev/null
+check "swap: a failed swap leaves no temporary or staging files" $?
+old_install
+FAKE_FAIL_INSTALL_MATCH="ollama.new" pai
+[[ "$rc" != 0 && -f "$PREFIX/lib/ollama/libstale.so" && ! -e "$PREFIX/lib/ollama/libggml-cpu.so" ]] &&
+  [[ "$("$PREFIX/bin/ollama" --version)" == *0.30.0* && ! -e "$PREFIX/lib/ollama.old" ]]
+check "swap: a failing binary install restores the old libraries and keeps the old binary" $?
+old_install
+pai
+[[ "$rc" == 0 && ! -e "$PREFIX/lib/ollama.old" && ! -e "$PREFIX/lib/ollama/libstale.so" && -f "$PREFIX/lib/ollama/libggml-cpu.so" ]]
+check "swap: a good swap removes lib/ollama.old and the stale libraries" $?
+read -r mver mvar <"$PREFIX/lib/ollama/.kali-cosmic-setup"
+[[ "$mver $mvar" == "$VER generic" ]]
+check "swap: the marker of the new install is in place" $?
+
+# --- W3: the listener check ---------------------------------------------------------
+reset_state
+printf 'LISTEN 0 4096 127.0.0.1:11434 0.0.0.0:*\n' >"$FAKE_STATE/ss-out"
+pai
+[[ "$rc" == 0 ]] && grep -q -- '-ltn' "$FAKE_STATE/ss.log" && ! grep -qi 'listens on' "$WORK/out"
+check "listener: 127.0.0.1:11434 only is fine and gives no warning" $?
+reset_state
+printf 'LISTEN 0 4096 *:11434 *:*\n' >"$FAKE_STATE/ss-out"
+pai
+[[ "$rc" == 0 ]] && grep -qi 'listens on' "$WORK/out" && grep -q 'ollama.service' "$WORK/out"
+check "listener: a wildcard listener on 11434 warns and names the unit as the place to fix it" $?
+reset_state
+printf 'LISTEN 0 4096 [::]:11434 [::]:*\n' >"$FAKE_STATE/ss-out"
+pai
+grep -qi 'listens on' "$WORK/out"
+check "listener: an IPv6 wildcard listener warns" $?
+reset_state
+printf 'LISTEN 0 4096 [::1]:11434 [::]:*\nLISTEN 0 4096 0.0.0.0:22 0.0.0.0:*\n' >"$FAKE_STATE/ss-out"
+pai
+! grep -qi 'listens on' "$WORK/out"
+check "listener: ::1 is loopback and other ports are ignored" $?
+reset_state
+pai --dry-run
+[[ ! -s "$FAKE_STATE/ss.log" ]]
+check "listener: dry-run does not look at the listeners" $?
+rm -f -- "$FAKE_STATE/ss-out"
+
+# --- S4: unit hardening ----------------------------------------------------------------
+reset_state
+pai
+for k in ProtectSystem=full ProtectKernelTunables=true ProtectKernelModules=true ProtectControlGroups=true \
+  NoNewPrivileges=true PrivateTmp=true ProtectHome=true Wants=network-online.target After=network-online.target \
+  ReadWritePaths=/usr/share/ollama; do
+  grep -qx "$k" "$UNIT" || { printf 'missing in unit: %s\n' "$k"; false; }
+done
+check "unit: sandboxing options, network-online wants/after and a writable model directory" $?
+
+# --- S5: archive hygiene ----------------------------------------------------------------
+grep -q -- '--no-same-permissions' "$REPO_ROOT/modules/22-packages-ai.sh" && grep -q -- '--no-same-owner' "$REPO_ROOT/modules/22-packages-ai.sh"
+check "tar: archives are unpacked with --no-same-owner and --no-same-permissions" $?
+sym_archive() { # sym_archive <what>: a base archive where lib/ollama or bin/ollama is a symlink
+  local d="$WORK/sym"
+  rm -rf -- "$d"
+  mkdir -p "$d/bin" "$d/lib" "$d/target"
+  echo cpu >"$d/target/libx.so"
+  printf '#!/bin/sh\necho x\n' >"$d/target/ollama"
+  chmod +x "$d/target/ollama"
+  if [[ "$1" == lib ]]; then
+    ln -s ../target "$d/lib/ollama"
+    cp -- "$d/target/ollama" "$d/bin/ollama"
+  else
+    mkdir -p "$d/lib/ollama"
+    ln -s ../target/ollama "$d/bin/ollama"
+  fi
+  tar --zstd -cf "$FAKE_STATE/curl-files/$BASE_TGZ" -C "$d" bin lib target
+  PACKAGES_AI_SHA256="$(sha256sum "$FAKE_STATE/curl-files/$BASE_TGZ" | awk '{ print $1 }')"
+}
+for what in lib bin; do
+  reset_state
+  sym_archive "$what"
+  pai
+  [[ "$rc" != 0 && ! -e "$PREFIX/bin/ollama" && ! -e "$PREFIX/lib/ollama" && ! -e "$UNIT" ]] && grep -qi 'symlink' "$WORK/out"
+  check "stage: an archive whose $what/ollama is a symlink is rejected and nothing is installed" $?
+done
+
+# --- S6: the version probe cannot reach a server ------------------------------------------------
+reset_state
+pai
+pai
+[[ -s "$FAKE_STATE/ollama-host.log" ]] && ! grep -qv '^127.0.0.1:1$' "$FAKE_STATE/ollama-host.log"
+check "probe: the version is read with OLLAMA_HOST=127.0.0.1:1 (the client never contacts a server)" $?
+
+# --- S7: unsupported architecture ---------------------------------------------------------------
+reset_state
+FAKE_UNAME_M=aarch64 pai
+[[ "$rc" == 0 && ! -s "$FAKE_STATE/curl.log" && ! -e "$PREFIX/bin/ollama" && ! -e "$UNIT" ]] && grep -qi 'aarch64' "$WORK/out"
+check "arch: aarch64 warns and skips (exit 0, no download, no unit)" $?
+
+# --- S8: free space -------------------------------------------------------------------------------
+reset_state
+FAKE_DF_KB=1000 pai
+[[ "$rc" != 0 && ! -s "$FAKE_STATE/curl.log" && ! -e "$PREFIX/bin/ollama" && ! -e "$UNIT" ]] && grep -qi 'free space' "$WORK/out"
+check "space: too little free space fails with a clear error before any download" $?
+[[ -z "$(ls -A "$TMPDIR")" && -z "$(ls -A "$KCS_ROOT/var/tmp" 2>/dev/null)" ]] && ! compgen -G "$PREFIX/.ollama-stage*" >/dev/null
+check "space: nothing is left behind after the space error" $?
+reset_state
+FAKE_DF_KB=3000000 PACKAGES_AI_GPU_VENDORS=amd pai
+[[ "$rc" != 0 ]] && grep -qi 'free space' "$WORK/out"
+check "space: the ROCm build needs more room than the generic one" $?
+
+# --- S9: the cleanup trap never fails or changes the exit status -------------------------------------
+reset_state
+export PACKAGES_AI_SHA256=1111111111111111111111111111111111111111111111111111111111111111
+FAKE_FAIL_RM_MATCH=".ollama-stage" pai
+[[ "$rc" == 1 ]] && grep -qi 'checksum mismatch' "$WORK/out" && ! grep -q 'command failed (exit 7)' "$WORK/out"
+check "cleanup: a failing rm in the exit trap is swallowed (the module keeps its own exit status)" $?
+reset_state
+
+# --- S10: malformed archive and ROCm restart ---------------------------------------------------------------
+reset_state
+d="$WORK/mal"
+rm -rf -- "$d"
+mkdir -p "$d/lib/ollama"
+echo cpu >"$d/lib/ollama/libggml-cpu.so"
+tar --zstd -cf "$FAKE_STATE/curl-files/$BASE_TGZ" -C "$d" lib
+PACKAGES_AI_SHA256="$(sha256sum "$FAKE_STATE/curl-files/$BASE_TGZ" | awk '{ print $1 }')"
+pai
+[[ "$rc" != 0 && ! -e "$PREFIX/bin/ollama" && ! -e "$PREFIX/lib/ollama" && ! -e "$UNIT" ]] && grep -q 'no bin/ollama' "$WORK/out"
+check "malformed: an archive without bin/ollama fails and installs nothing" $?
+old_install
+tar --zstd -cf "$FAKE_STATE/curl-files/$BASE_TGZ" -C "$d" lib
+PACKAGES_AI_SHA256="$(sha256sum "$FAKE_STATE/curl-files/$BASE_TGZ" | awk '{ print $1 }')"
+pai
+[[ "$rc" != 0 && -f "$PREFIX/lib/ollama/libstale.so" && "$("$PREFIX/bin/ollama" --version)" == *0.30.0* ]]
+check "malformed: the old install keeps working when the new archive is malformed" $?
+reset_state
+pai
+printf 'ollama.service\n' >"$FAKE_STATE/enabled"
+printf 'ollama.service\n' >"$FAKE_STATE/active"
+PACKAGES_AI_GPU_VENDORS=amd pai
+[[ "$rc" == 0 && -f "$PREFIX/lib/ollama/rocm/librocblas.so" ]] && grep -q '^restart -- ollama.service$' "$FAKE_STATE/systemctl.log"
+check "rocm: adding the ROCm build to a running service restarts it once" $?
+[[ "$(grep -c '^restart' "$FAKE_STATE/systemctl.log")" == 1 ]]
+check "rocm: exactly one restart" $?
 
 # --- static checks -------------------------------------------------------------------
 reset_state

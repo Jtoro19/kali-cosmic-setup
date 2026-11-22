@@ -30,7 +30,10 @@ read 2026-11-22).
   /usr/share/ollama`); models live under `/usr/share/ollama/.ollama/models`.
 - `/etc/systemd/system/ollama.service`: `User=ollama`, `ExecStart=/usr/local/bin/ollama
   serve`, `Environment="OLLAMA_HOST=127.0.0.1:11434"`, `Restart=always`,
-  `NoNewPrivileges`, `PrivateTmp`, `ProtectHome`. Enabled with `--now`.
+  `NoNewPrivileges`, `PrivateTmp`, `ProtectHome`, `ProtectSystem=full`,
+  `ProtectKernelTunables`, `ProtectKernelModules`, `ProtectControlGroups`,
+  `ReadWritePaths=/usr/share/ollama` (the models; `ProtectSystem=full` makes
+  `/usr` read-only), `Wants=` and `After=network-online.target`. Enabled with `--now`.
 - AMD only: the `ollama` user joins `render` and `video` (device access for
   `/dev/kfd` and `/dev/dri`, as Ollama's own install script does).
 - The invoking user is not added to any group: the CLI talks to the service
@@ -64,11 +67,33 @@ architecture fails with an error.
   is kept. It was only exercised with fixtures: the VM has a virtio GPU and runs
   the generic build; the owner's host (RX 7900 XTX) is the real ROCm case.
 - **Staging, then swap.** Archives are unpacked into `/usr/local/.ollama-stage`
-  (same filesystem), checked for `bin/ollama` and `lib/ollama`, and only then
-  `lib/ollama` is replaced and the binary installed, so a failed download or
-  unpack leaves the previous install working. The old `lib/ollama` is removed
-  first (upstream: old libraries must not mix with new ones). The replaced
-  binary gets no `.bak` (reproducible release artifact, see packages-dev).
+  (same filesystem; `tar --no-same-owner --no-same-permissions`), checked for
+  `bin/ollama` and `lib/ollama` (a symlink as either is rejected: the archive is
+  not trusted to point outside the stage), and only then swapped in: the old
+  `lib/ollama` moves to `lib/ollama.old`, the new one moves in, the binary is
+  installed under a temporary name and renamed, and only then is the old copy
+  removed. Any failing step puts the old libraries back and fails the module, so
+  a failed download, unpack or swap leaves the previous install working (the
+  libraries of an older release never mix with the new ones: the whole directory
+  is replaced). The marker is written into the stage, so it moves with the
+  libraries. The replaced binary gets no `.bak` (reproducible release artifact,
+  see packages-dev).
+- **Free space is checked first** (`df`): 2 GiB in `/var/tmp` and 5 GiB in the
+  prefix for the generic build, 3 and 10 GiB with ROCm (archives, the unpacked
+  stage and the copy of the old install). Too little fails with the numbers
+  before anything is downloaded.
+- **Never downgrade, on AMD too.** A newer installed Ollama is left alone. If
+  the host is AMD and the newer install has no ROCm marker, the module warns
+  that ROCm cannot be added (the pinned ROCm archive belongs to the pinned
+  release) and does not touch it, nor the `render`/`video` groups. The ROCm
+  overlay is installed only on a fresh install or when installed == pin.
+- **Version probe.** `ollama --version` runs with `OLLAMA_HOST=127.0.0.1:1`, so
+  the client cannot reach a running server (a connected client prints the server
+  version) and the client version is read.
+- **aarch64 and other architectures are skipped with a warning** (exit 0, no
+  unit): the module has nothing to install there, it is not an error.
+- **The EXIT trap swallows every failure** (temporary directory, stage), so a
+  cleanup problem never hides the original error or changes the exit status.
 - **Downloads go to `/var/tmp`, not `/tmp`.** `/tmp` is a RAM-backed tmpfs on
   current Kali (the VM: 4 GB). The download directory is removed on success,
   failure and fail-fast exits (EXIT trap of the module).
@@ -87,8 +112,11 @@ architecture fails with an error.
   keeps the ROCm libraries (harmless).
 - **Localhost only.** The unit sets `OLLAMA_HOST=127.0.0.1:11434` and no
   `OLLAMA_ORIGINS`. Verified with `ss -ltnp`: port 11434 only on 127.0.0.1.
-  Ollama's default is also loopback, but the unit makes it explicit. A user
-  drop-in under `ollama.service.d` could still override it; the module does not
+  Ollama's default is also loopback, but the unit makes it explicit. The unit is
+  the enforcement point. After the service starts the module checks `ss -ltn`
+  (waiting up to ten seconds for the port) and warns when 11434 listens on
+  anything but `127.0.0.1` or `[::1]`, for example because of a user drop-in
+  under `ollama.service.d` that overrides `OLLAMA_HOST`; the module does not
   manage drop-ins.
 - **Restart rule.** A first install starts the service with `enable --now`; an
   already running service is restarted once when the binary, the unit or the
