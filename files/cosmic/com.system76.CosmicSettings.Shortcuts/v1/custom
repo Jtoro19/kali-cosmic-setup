@@ -1,0 +1,10 @@
+{
+    (
+        modifiers: [
+            Super,
+            Shift,
+        ],
+        key: "s",
+        description: Some("cosmic-screenshot"),
+    ): Spawn("cosmic-screenshot"),
+}

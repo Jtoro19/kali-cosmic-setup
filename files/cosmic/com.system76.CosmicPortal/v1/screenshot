@@ -1,0 +1,5 @@
+(
+    save_location: Clipboard,
+    choice: Rectangle,
+    last_rectangle: None,
+)

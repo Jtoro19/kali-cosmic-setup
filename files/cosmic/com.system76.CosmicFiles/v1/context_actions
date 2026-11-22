@@ -1,0 +1,26 @@
+[
+    (
+        name: "Open with PeaZip",
+        confirm: false,
+        selection: Files,
+        steps: ["/usr/bin/peazip %F"],
+    ),
+    (
+        name: "Extract here (PeaZip)",
+        confirm: false,
+        selection: Files,
+        steps: ["/usr/bin/peazip -ext2here %F"],
+    ),
+    (
+        name: "Extract to folder (PeaZip)",
+        confirm: false,
+        selection: Files,
+        steps: ["/usr/bin/peazip -ext2folder %F"],
+    ),
+    (
+        name: "Compress with PeaZip",
+        confirm: false,
+        selection: Any,
+        steps: ["/usr/bin/peazip -add2archive %F"],
+    ),
+]

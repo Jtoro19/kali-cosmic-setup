@@ -74,6 +74,7 @@ changes.
 
 - `pkg_installed <pkg>`: true when `dpkg-query` reports `install ok installed`.
 - `apt_update_once [--force]`: refresh the package lists once per run.
+- `apt_update_may_fail`: the same refresh but it returns the status instead of ending the module, for optional packages.
 - `apt_full_upgrade`: `apt-get full-upgrade`, never a partial upgrade.
 - `ensure_packages [--no-install-recommends] <pkg...>`: installs only the
   missing packages, non-interactively, keeping existing config files
