@@ -44,9 +44,14 @@ ships). Aura upstream: `github.com/antwny/aura`.
     `navbar-closed-symbolic.svg` (required) and `fire-symbolic.svg` (optional),
     0644
   - removed, like upstream: stale `~/.local/share/icons/hicolor/*/apps/io.github.antwny.aura.png`
-    (that exact name only, logged as a change, through the user path guards)
-  - `~/.local/share/applications/io.github.antwny.aura.desktop` (absolute
-    `TryExec`/`Exec`, the same rewrite as upstream)
+    (that exact name only, logged as a change, through the user path guards;
+    like upstream, only when the release is (re)installed, so a later stray
+    file is not touched by a run that has nothing to install)
+  - `~/.local/share/applications/io.github.antwny.aura.desktop`, the same
+    rewrite as upstream: every `Exec=aura [args]` gets the absolute path with
+    its arguments kept (the `Switcher` desktop action stays `aura switcher`),
+    and only the main `[Desktop Entry]` group gets one absolute `TryExec`
+    (the key is not valid in an action group)
   - `~/.local/share/icons/hicolor/scalable/apps/io.github.antwny.aura.svg`
   - `~/.local/share/metainfo/io.github.antwny.aura.metainfo.xml`
   - `update-desktop-database` and `gtk-update-icon-cache` run only when files

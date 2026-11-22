@@ -82,7 +82,12 @@ _aura_semver_newer() {
 _aura_installed_newer() {
   local m bin="$HOME/.local/bin/aura" have
   m="$(_aura_marker)"
-  [[ -f "$m" ]] && _aura_semver_newer "$(sed -n 1p "$m")" "$_AURA_VERSION" && return 0
+  # Only a marker line shaped like a version counts: a corrupted line must not
+  # sort above the pin and block the install for good.
+  if [[ -f "$m" ]]; then
+    have="$(sed -n 1p "$m")"
+    [[ "$have" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]] && _aura_semver_newer "$have" "$_AURA_VERSION" && return 0
+  fi
   if [[ -f "$bin" && -x "$bin" && ! -L "$bin" ]]; then
     have="$(timeout 5 "$bin" --version </dev/null 2>/dev/null | grep -Eo 'v?[0-9]+\.[0-9]+\.[0-9]+' | head -n 1 || true)"
     [[ -z "$have" || "$have" == v* ]] || have="v$have"
@@ -142,15 +147,26 @@ _aura_install_files() {
   install_file "$pkg/io.github.antwny.aura.metainfo.xml" \
     "$share/metainfo/io.github.antwny.aura.metainfo.xml" 0644 || return 1
 
-  # Desktop entry: absolute Exec and a TryExec just above it, like upstream.
+  # Desktop entry, like upstream: `Exec=aura [args]` becomes the absolute path
+  # with its arguments kept (the Switcher action runs `aura switcher`), and the
+  # main [Desktop Entry] group gets one absolute TryExec just above its Exec.
+  # TryExec is not valid in an action group, so none is written there.
   desktop="$pkg/../aura.desktop.out"
   : >"$desktop"
+  local group="" tryexec_done=0
   while IFS= read -r line || [[ -n "$line" ]]; do
-    if [[ "$line" == Exec=* ]]; then
-      printf 'TryExec=%s/aura\nExec=%s/aura\n' "$bin_dir" "$bin_dir" >>"$desktop"
-    elif [[ "$line" != TryExec=* ]]; then
-      printf '%s\n' "$line" >>"$desktop"
+    if [[ "$line" == \[*\] ]]; then
+      group="$line"
+    elif [[ "$line" == TryExec=* ]]; then
+      continue
+    elif [[ "$line" == Exec=aura || "$line" == "Exec=aura "* ]]; then
+      if [[ "$group" == "[Desktop Entry]" ]] && ((!tryexec_done)); then
+        printf 'TryExec=%s/aura\n' "$bin_dir" >>"$desktop"
+        tryexec_done=1
+      fi
+      line="Exec=$bin_dir/aura${line#Exec=aura}"
     fi
+    printf '%s\n' "$line" >>"$desktop"
   done <"$pkg/io.github.antwny.aura.desktop"
   install_file "$desktop" "$share/applications/io.github.antwny.aura.desktop" 0644 || return 1
 

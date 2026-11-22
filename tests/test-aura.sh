@@ -50,7 +50,8 @@ mk_release() {
   chmod +x "$WORK/pkg/$DIR/aura" "$WORK/pkg/$DIR/mpvpaper"
   echo '<svg/>' >"$WORK/pkg/$DIR/io.github.antwny.aura.svg"
   echo '<component/>' >"$WORK/pkg/$DIR/io.github.antwny.aura.metainfo.xml"
-  printf '[Desktop Entry]\nName=Aura\nTryExec=aura\nExec=aura\nIcon=io.github.antwny.aura\n' >"$WORK/pkg/$DIR/io.github.antwny.aura.desktop"
+  # Like the v1.11.2 entry: a main group plus a desktop action with an argument.
+  printf '[Desktop Entry]\nName=Aura\nTryExec=aura\nExec=aura\nIcon=io.github.antwny.aura\nActions=Switcher;\n\n[Desktop Action Switcher]\nName=Open Quick Switcher\nExec=aura switcher\n' >"$WORK/pkg/$DIR/io.github.antwny.aura.desktop"
   printf '#!/bin/sh\necho effects\n' >"$WORK/pkg/$DIR/aura-effects"
   printf '#!/bin/sh\necho depth\n' >"$WORK/pkg/$DIR/aura-depth"
   chmod +x "$WORK/pkg/$DIR/aura-effects" "$WORK/pkg/$DIR/aura-depth"
@@ -136,6 +137,8 @@ check "install: no environment.d file and no shell rc edit (COSMIC only)" $?
 D="$SHARE/applications/io.github.antwny.aura.desktop"
 grep -qx "Exec=$BINDIR/aura" "$D" && grep -qx "TryExec=$BINDIR/aura" "$D" && [[ "$(grep -c '^TryExec=' "$D")" == 1 ]]
 check "install: the desktop entry gets an absolute Exec and a single TryExec" $?
+grep -qx "Exec=$BINDIR/aura switcher" "$D" && [[ "$(sed -n '/^\[Desktop Action Switcher\]/,$p' "$D" | grep -c '^TryExec=')" == 0 ]]
+check "install: the Switcher desktop action keeps its argument and gets no TryExec" $?
 [[ "$(sed -n 1p "$MARKER")" == "$VER" && "$(sed -n 2p "$MARKER")" == mpvpaper=bundled ]]
 check "marker: the installed version is recorded" $?
 [[ "$(sed -n 3p "$MARKER")" == "optional=aura-effects aura-depth fire-symbolic.svg" ]]
@@ -494,6 +497,19 @@ echo v9.0.0 >"$MARKER"
 au
 [[ "$rc" == 0 && ! -s "$FAKE_STATE/curl.log" ]] && grep -q '\[warn\].*newer' "$WORK/out" && grep -q 'v9.0.0' "$MARKER"
 check "no downgrade: a marker with a newer version is kept (warning, no download)" $?
+reset_state
+au
+printf 'zzz\nmpvpaper=bundled\n' >"$MARKER"
+au
+[[ "$rc" == 0 && "$(sed -n 1p "$MARKER")" == "$VER" ]] && grep -qx "$URL" "$FAKE_STATE/curl.log"
+check "a marker whose version line is not a version does not block the install" $?
+reset_state
+au
+printf '#!/bin/sh\necho "Aura Live Wallpaper v9.0.0"\n' >"$BINDIR/aura"
+rm -f -- "$ACT/fire-symbolic.svg"
+au
+[[ "$rc" == 0 && ! -s "$FAKE_STATE/curl.log" ]] && grep -q '\[warn\].*newer' "$WORK/out" && "$BINDIR/aura" --version | grep -q v9.0.0
+check "self-update: aura updated from its own UI (newer binary, a file missing) is kept, no download" $?
 
 # --- M11b: the shortcuts seed file is gone, the module builds the map --------------------------------------------------
 [[ ! -e "$REPO_ROOT/files/cosmic/com.system76.CosmicSettings.Shortcuts" ]]
