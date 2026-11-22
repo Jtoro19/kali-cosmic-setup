@@ -259,7 +259,13 @@ case "$cmd" in
     cat "$FAKE_STATE/default" 2>/dev/null || echo multi-user.target
     ;;
   set-default) echo "$1" >"$FAKE_STATE/default" ;;
-  daemon-reload) ;;
+  daemon-reload)
+    # Unit files written under $KCS_ROOT/etc/systemd/system become known units.
+    for f in "$sysd"/*.service; do
+      [ -f "$f" ] || continue
+      grep -qx -- "${f##*/}" "$FAKE_STATE/units" 2>/dev/null || echo "${f##*/}" >>"$FAKE_STATE/units"
+    done
+    ;;
   enable)
     for u in "$@"; do
       case "$u" in -*) continue ;; esac
@@ -300,6 +306,15 @@ case "$1" in
   group) grep -qx -- "$2" "$FAKE_STATE/groups" 2>/dev/null ;;
   *) exit 1 ;;
 esac
+EOS
+
+  # useradd <opts> <name>: logs the call and records the user in the fake user list.
+  cat >"$bin/useradd" <<'EOS'
+#!/bin/sh
+echo "useradd $*" >>"$FAKE_STATE/all.log"
+echo "$*" >>"$FAKE_STATE/useradd.log"
+for a in "$@"; do name="$a"; done
+echo "$name" >>"$FAKE_STATE/users"
 EOS
 
   # id -nG: the groups of the user in $FAKE_STATE/usergroups; every other call
