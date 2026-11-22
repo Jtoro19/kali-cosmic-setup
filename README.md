@@ -151,6 +151,18 @@ package rename is in [PORTING.md](PORTING.md).
   installer never disables or masks the text consoles (getty), so this always
   works. More in `specs/desktop.md`.
 
+## Known issues
+
+- **Chromium and Brave in a QEMU/KVM virtual machine.** With the virtio GPU
+  (`virtio-vga-gl`), both crash at start (`Trace/breakpoint trap`, after
+  `create_immed failed and produced an invalid wl_buffer`) when they run as
+  native Wayland clients with GPU compositing: the compositor cannot import
+  the buffers the virtual GPU gives them (`import for wrong devices` in the
+  journal). They run with `--ozone-platform=x11` or
+  `--disable-gpu-compositing`. Firefox ESR is not affected. The installer does
+  not force these flags, because on real hardware they would only make the
+  browsers worse (XWayland instead of native Wayland).
+
 ## Not managed
 
 - **Bootloader and kernel parameters.** The Kali installer configures them
