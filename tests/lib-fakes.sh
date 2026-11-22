@@ -158,8 +158,8 @@ case "$mode" in
 esac
 EOS
 
-  # systemctl: state in $FAKE_STATE (enabled = enabled units, default = boot
-  # target). Every call is logged to systemctl.log. `enable` and `disable`
+  # systemctl: state in $FAKE_STATE (enabled = enabled units, active = active
+  # units, units = installed unit files, default = boot target). Every call is logged to systemctl.log. `enable` and `disable`
   # keep $KCS_ROOT/etc/systemd/system/display-manager.service in step like the
   # Alias=display-manager.service of a real display manager unit.
   cat >"$bin/systemctl" <<'EOS'
@@ -181,6 +181,13 @@ case "$cmd" in
   is-active)
     for a in "$@"; do unit="$a"; done
     grep -qx -- "$unit" "$FAKE_STATE/active" 2>/dev/null
+    ;;
+  list-unit-files)
+    # `list-unit-files --no-legend -- <unit>`: prints a row when the unit is
+    # listed in $FAKE_STATE/units (one unit file per line), nothing otherwise.
+    for a in "$@"; do unit="$a"; done
+    grep -qx -- "$unit" "$FAKE_STATE/units" 2>/dev/null && echo "$unit enabled enabled"
+    exit 0
     ;;
   get-default)
     cat "$FAKE_STATE/default" 2>/dev/null || echo multi-user.target
