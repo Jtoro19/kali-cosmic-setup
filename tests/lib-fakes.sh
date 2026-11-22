@@ -36,6 +36,17 @@ esac
 exit 99
 EOS
 
+  # systemd-detect-virt: FAKE_VIRT=<hypervisor> (kvm, vmware, oracle, microsoft
+  # ...) makes `--vm` succeed and print it; unset or `none` (the default, bare
+  # metal) prints none and fails like the real command.
+  cat >"$bin/systemd-detect-virt" <<'EOS'
+#!/bin/sh
+case "${FAKE_VIRT:-none}" in
+  none) echo none; exit 1 ;;
+  *) echo "$FAKE_VIRT"; exit 0 ;;
+esac
+EOS
+
   # dpkg-query -W -f='${Status}' <pkg>: reads $FAKE_STATE/installed, one entry
   # per line: "name" (installed) or "name:rc" (removed, config files remain).
   cat >"$bin/dpkg-query" <<'EOS'

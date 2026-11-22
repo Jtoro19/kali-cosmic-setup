@@ -384,8 +384,10 @@ FAKE_APT_RC=100 pk
 [[ "$rc" != 0 ]]
 check "a failing apt-get fails the module" $?
 
-# --- virtio GPU: browsers start with X11 ---------------------------------------
-CHR=/etc/chromium.d/kali-cosmic-setup-virtio-gpu
+# --- virtual display (any VM, no physical GPU): browsers start with X11 ---------------------------------------
+CHR=/etc/chromium.d/kali-cosmic-setup-virtual-gpu
+OLDCHR=/etc/chromium.d/kali-cosmic-setup-virtio-gpu
+export FAKE_VIRT=kvm
 BDESK=/usr/local/share/applications/brave-browser.desktop
 BSRC=/usr/share/applications/brave-browser.desktop
 CHR_LINE="export CHROMIUM_FLAGS=\"\$CHROMIUM_FLAGS --ozone-platform=x11\""
@@ -422,41 +424,41 @@ set_gpus 0x1af4
 write_brave_src
 pk
 [[ "$rc" == 0 && -f "$KCS_ROOT$CHR" && "$(stat -c %a "$KCS_ROOT$CHR")" == 644 ]] &&
-  grep -q 'kali-cosmic-setup: virtio-gpu browser workaround' "$KCS_ROOT$CHR" &&
+  grep -q 'kali-cosmic-setup: virtual-gpu browser workaround' "$KCS_ROOT$CHR" &&
   grep -qxF "$CHR_LINE" "$KCS_ROOT$CHR"
-check "virtio: the chromium.d drop-in is written (0644, marker, flag), chromium need not be installed" $?
+check "vm (virtio): the chromium.d drop-in is written (0644, marker, flag), chromium need not be installed" $?
 [[ "$(grep -c '^Exec=' "$KCS_ROOT$BDESK")" == 3 ]] &&
   grep -qx 'Exec=/usr/bin/brave-browser-stable --ozone-platform=x11 %U' "$KCS_ROOT$BDESK" &&
   grep -qx 'Exec=/usr/bin/brave-browser-stable --ozone-platform=x11' "$KCS_ROOT$BDESK" &&
   grep -qx 'Exec=/usr/bin/brave-browser-stable --ozone-platform=x11 --incognito' "$KCS_ROOT$BDESK" &&
-  [[ "$(head -n1 "$KCS_ROOT$BDESK")" == '# kali-cosmic-setup: virtio-gpu browser workaround'* ]]
-check "virtio: the Brave desktop entry is generated with the flag in every Exec line and a marker first" $?
+  [[ "$(head -n1 "$KCS_ROOT$BDESK")" == '# kali-cosmic-setup: virtual-gpu browser workaround'* ]]
+check "vm (virtio): the Brave desktop entry is generated with the flag in every Exec line and a marker first" $?
 diff <(grep -v -e '^Exec=' -e '^# kali-cosmic-setup' -e '^TryExec=' "$KCS_ROOT$BDESK") <(grep -v '^Exec=' "$KCS_ROOT$BSRC") >/dev/null
-check "virtio: every other line of the desktop entry is kept" $?
+check "vm (virtio): every other line of the desktop entry is kept" $?
 [[ "$(grep -c '^TryExec=' "$KCS_ROOT$BDESK")" == 1 && "$(sed -n 3p "$KCS_ROOT$BDESK")" == 'TryExec=/usr/bin/brave-browser-stable' ]]
-check "virtio: the generated entry gets one TryExec in its main group (hidden if Brave is removed)" $?
+check "vm (virtio): the generated entry gets one TryExec in its main group (hidden if Brave is removed)" $?
 before="$(snap)"
 pk
 [[ "$rc" == 0 && "$(snap)" == "$before" ]] && grep -q 'total changes: 0' "$WORK/out"
-check "virtio: a second run changes nothing (total changes: 0)" $?
+check "vm (virtio): a second run changes nothing (total changes: 0)" $?
 sed -i 's/^Name=Brave Web Browser/Name=Brave Renamed/' "$KCS_ROOT$BSRC"
 pk
 [[ "$rc" == 0 ]] && grep -qx 'Name=Brave Renamed' "$KCS_ROOT$BDESK" && grep -q 'total changes: 1' "$WORK/out"
-check "virtio: a changed source desktop entry regenerates the generated one (1 change)" $?
+check "vm (virtio): a changed source desktop entry regenerates the generated one (1 change)" $?
 
 # Not virtual: the marker files are removed, other files are left.
 set_gpus 0x8086
 pk
 [[ "$rc" == 0 && ! -e "$KCS_ROOT$CHR" && ! -e "$KCS_ROOT$BDESK" && -f "$KCS_ROOT$BSRC" ]] &&
   grep -q 'total changes: 2' "$WORK/out"
-check "real GPU: both marker files are removed (2 changes), the source entry stays" $?
+check "physical GPU: both marker files are removed (2 changes), the source entry stays" $?
 pk
 grep -q 'total changes: 0' "$WORK/out"
-check "real GPU: a second run changes nothing" $?
+check "physical GPU: a second run changes nothing" $?
 set_gpus 0x1af4 0x10de
 pk
 [[ ! -e "$KCS_ROOT$CHR" && ! -e "$KCS_ROOT$BDESK" ]]
-check "mixed virtio and real GPUs: nothing is written" $?
+check "vm with a passed-through GPU: nothing is written" $?
 
 # Files without the marker are never touched, with a warning.
 set_gpus 0x8086
@@ -465,22 +467,22 @@ echo '# mine' >"$KCS_ROOT$CHR"
 echo '[Desktop Entry]' >"$KCS_ROOT$BDESK"
 pk
 [[ "$rc" == 0 && "$(<"$KCS_ROOT$CHR")" == '# mine' && "$(<"$KCS_ROOT$BDESK")" == '[Desktop Entry]' ]] &&
-  grep -q '\[warn\].*kali-cosmic-setup-virtio-gpu' "$WORK/out" &&
+  grep -q '\[warn\].*kali-cosmic-setup-virtual-gpu' "$WORK/out" &&
   grep -q '\[warn\].*brave-browser.desktop' "$WORK/out"
-check "real GPU: files without the marker are left alone with a warning each" $?
+check "physical GPU: files without the marker are left alone with a warning each" $?
 set_gpus 0x1af4
 pk
 [[ "$rc" == 0 && "$(<"$KCS_ROOT$CHR")" == '# mine' && "$(<"$KCS_ROOT$BDESK")" == '[Desktop Entry]' ]] &&
   ! ls "$KCS_ROOT"/etc/chromium.d/*.bak.* >/dev/null 2>&1 &&
-  grep -q '\[warn\].*kali-cosmic-setup-virtio-gpu' "$WORK/out" && grep -q '\[warn\].*brave-browser.desktop' "$WORK/out"
-check "virtio: files without the marker are not replaced (no backup) and warn" $?
+  grep -q '\[warn\].*kali-cosmic-setup-virtual-gpu' "$WORK/out" && grep -q '\[warn\].*brave-browser.desktop' "$WORK/out"
+check "vm (virtio): files without the marker are not replaced (no backup) and warn" $?
 
 # virtio without the Brave source entry: only the drop-in.
 reset_state
 set_gpus 0x1af4
 pk
 [[ "$rc" == 0 && -f "$KCS_ROOT$CHR" && ! -e "$KCS_ROOT$BDESK" ]]
-check "virtio: without /usr/share/applications/brave-browser.desktop only the drop-in is written" $?
+check "vm (virtio): without /usr/share/applications/brave-browser.desktop only the drop-in is written" $?
 reset_state
 set_gpus 0x1af4
 write_brave_src
@@ -488,7 +490,83 @@ printf '[Desktop Action env]\nName=Env\nExec=env FOO=1 /usr/bin/brave-browser-st
 pk
 [[ "$rc" == 0 ]] && grep -qx 'Exec=env FOO=1 /usr/bin/brave-browser-stable' "$KCS_ROOT$BDESK" &&
   grep -qxF 'Exec="/opt/my brave/brave"' "$KCS_ROOT$BDESK" && grep -q '\[warn\].*Exec line' "$WORK/out"
-check "virtio: an env or quoted Exec line is left as is, with a warning" $?
+check "vm (virtio): an env or quoted Exec line is left as is, with a warning" $?
+
+# Other hypervisors and the conditions that must NOT apply it.
+vmcase() { # vmcase <description> <expect applied|not> <FAKE_VIRT> <vendor id|novendor...>
+  local d="$1" want="$2" hv="$3" ok=1
+  shift 3
+  reset_state
+  set_gpus "$@"
+  if [[ "${1:-}" == novendor ]]; then rm -f -- "$KCS_ROOT"/sys/class/drm/card0/device/vendor; fi
+  write_brave_src
+  FAKE_VIRT="$hv" pk
+  if [[ "$want" == applied ]]; then
+    [[ -f "$KCS_ROOT$CHR" && -f "$KCS_ROOT$BDESK" ]] && ok=0
+  else
+    [[ ! -e "$KCS_ROOT$CHR" && ! -e "$KCS_ROOT$BDESK" ]] && ok=0
+  fi
+  [[ "$rc" == 0 ]] || ok=1
+  check "$d" "$ok"
+}
+vmcase "KVM with a virtio card: applied" applied kvm 0x1af4
+vmcase "VMware with a 0x15ad card: applied" applied vmware 0x15ad
+vmcase "VirtualBox with a 0x80ee card: applied" applied oracle 0x80ee
+vmcase "Hyper-V with a card without a vendor file: applied" applied microsoft novendor
+vmcase "VM with virtio plus an NVIDIA passthrough card: not applied" not kvm 0x1af4 0x10de
+vmcase "VM with only an AMD card: not applied" not kvm 0x1002
+vmcase "bare metal with a virtio card: not applied" not none 0x1af4
+vmcase "bare metal with a VMware card: not applied" not none 0x15ad
+vmcase "bare metal with an Intel card: not applied" not none 0x8086
+
+# (A missing systemd-detect-virt, never applied, is covered in test-hardware.sh.)
+
+# From a VM to bare metal the marker files are removed, then nothing changes.
+reset_state
+set_gpus 0x1af4
+write_brave_src
+pk
+[[ -f "$KCS_ROOT$CHR" && -f "$KCS_ROOT$BDESK" ]]
+check "vm to bare metal: setup (applied in the VM)" $?
+FAKE_VIRT=none pk
+[[ "$rc" == 0 && ! -e "$KCS_ROOT$CHR" && ! -e "$KCS_ROOT$BDESK" ]] && grep -q 'total changes: 2' "$WORK/out"
+check "vm to bare metal: both marker files are removed (2 changes)" $?
+FAKE_VIRT=none pk
+grep -q 'total changes: 0' "$WORK/out"
+check "bare metal: a second run changes nothing" $?
+
+# Files deployed by the earlier virtio-only version (old marker and file name).
+OLDMARK='kali-cosmic-setup: virtio-gpu browser workaround'
+reset_state
+set_gpus 0x1af4
+write_brave_src
+mkdir -p "$KCS_ROOT/etc/chromium.d" "$KCS_ROOT/usr/local/share/applications"
+# shellcheck disable=SC2016
+printf '# %s: old\nexport CHROMIUM_FLAGS="$CHROMIUM_FLAGS --ozone-platform=x11"\n' "$OLDMARK" >"$KCS_ROOT$OLDCHR"
+printf '# %s: generated\n[Desktop Entry]\nExec=/usr/bin/x\n' "$OLDMARK" >"$KCS_ROOT$BDESK"
+pk
+[[ "$rc" == 0 && ! -e "$KCS_ROOT$OLDCHR" && -f "$KCS_ROOT$CHR" ]] &&
+  head -n1 "$KCS_ROOT$BDESK" | grep -qF 'virtual-gpu browser workaround' &&
+  grep -qx 'Exec=/usr/bin/brave-browser-stable --ozone-platform=x11 %U' "$KCS_ROOT$BDESK"
+check "legacy: the old-named drop-in is removed, the new one written, the old-marker Brave entry regenerated" $?
+pk
+grep -q 'total changes: 0' "$WORK/out"
+check "legacy: a second run changes nothing" $?
+reset_state
+set_gpus 0x8086
+mkdir -p "$KCS_ROOT/etc/chromium.d" "$KCS_ROOT/usr/local/share/applications"
+printf '# %s: old\n' "$OLDMARK" >"$KCS_ROOT$OLDCHR"
+printf '# %s: generated\n' "$OLDMARK" >"$KCS_ROOT$BDESK"
+pk
+[[ "$rc" == 0 && ! -e "$KCS_ROOT$OLDCHR" && ! -e "$KCS_ROOT$BDESK" ]]
+check "legacy: on a physical GPU the old-marker files are removed too" $?
+reset_state
+set_gpus 0x1af4
+mkdir -p "$KCS_ROOT/etc/chromium.d"
+echo '# mine' >"$KCS_ROOT$OLDCHR"
+pk
+[[ "$(<"$KCS_ROOT$OLDCHR")" == '# mine' ]]
+check "legacy: an old-named file without any marker is left alone" $?
 
 # Dry-run writes nothing.
 reset_state
@@ -496,12 +574,12 @@ set_gpus 0x1af4
 write_brave_src
 pk --dry-run
 [[ "$rc" == 0 && ! -e "$KCS_ROOT$CHR" && ! -e "$KCS_ROOT$BDESK" ]] && grep -q '\[change\]' "$WORK/out"
-check "virtio dry-run: nothing is written, the changes are reported" $?
+check "vm dry-run: nothing is written, the changes are reported" $?
 pk
 set_gpus 0x8086
 pk --dry-run
 [[ -f "$KCS_ROOT$CHR" && -f "$KCS_ROOT$BDESK" ]]
-check "real GPU dry-run: nothing is removed" $?
+check "physical GPU dry-run: nothing is removed" $?
 
 # --- static checks on the data and the module --------------------------------------
 LIST="$REPO_ROOT/files/packages/core.apt"

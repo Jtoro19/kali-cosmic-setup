@@ -28,11 +28,11 @@ in `modules/15-packages.sh` because they need a key, a pin or a checksum.
 - Packages: the core list below, `gnupg curl ca-certificates` (to fetch and
   verify the key), `brave-browser` (its dependency `brave-keyring` comes with
   it), `libgtk2.0-0t64` and `peazip`.
-- Only on a virtio GPU (see "Browsers on a virtio GPU"):
-  `/etc/chromium.d/kali-cosmic-setup-virtio-gpu` and
+- Only in a virtual machine (see "Browsers in a virtual machine"):
+  `/etc/chromium.d/kali-cosmic-setup-virtual-gpu` and
   `/usr/local/share/applications/brave-browser.desktop`, both root-owned 0644.
 - Kali tools are not touched; packages already installed are skipped.
-- Order: core list, Brave, browsers on a virtio GPU, PeaZip. A failure in a later step leaves the earlier
+- Order: core list, Brave, browsers in a virtual machine, PeaZip. A failure in a later step leaves the earlier
   ones installed (apt is idempotent, the next run continues).
 
 ## What the module installs
@@ -161,29 +161,53 @@ Dropped, with the reason:
   also runs before the PeaZip runtime install when `libgtk2.0-0t64` is
   missing. A no-op run runs none.
 
-## Browsers on a virtio GPU
+## Browsers in a virtual machine
 
-Problem (verified on the test VM, `virtio-vga-gl`, PCI `1af4:1050`): Chromium
-156 and Brave, as native Wayland clients with GPU compositing, die at start with
-`create_immed failed and produced an invalid wl_buffer` and `Trace/breakpoint
-trap`; `cosmic-comp` logs `import for wrong devices`. From the COSMIC app menu
-they simply do not open. Both start with `--ozone-platform=x11` and with
-`--disable-gpu-compositing` (each tested).
+Problem (verified on a KVM test VM, `virtio-vga-gl` with virgl 3D, PCI
+`1af4:1050`): Chromium 156 and Brave, as native Wayland clients with GPU
+compositing, die at start with `create_immed failed and produced an invalid
+wl_buffer` and `Trace/breakpoint trap`; `cosmic-comp` logs `import for wrong
+devices`. From the COSMIC app menu they simply do not open. Both start with
+`--ozone-platform=x11` and with `--disable-gpu-compositing` (each tested). With
+3D acceleration turned off in the VM the browsers also work natively; the same
+dmabuf import failure crashes `cosmic-workspaces` (Super+W), which is why the
+README tells KVM/QEMU users to turn 3D off.
 
-Decision: run them as X11 clients (XWayland), only when every `cardN` under
-`/sys/class/drm` has PCI vendor `0x1af4` and at least one exists
-(`gpu_is_virtual` in `lib/common.sh`; connector entries such as
-`card0-Virtual-1` are not cards; a mix of virtual and real GPUs is not virtual,
-and a card whose vendor cannot be read counts as real hardware). Known
-limitation: a VM with a passed-through real GPU next to the virtio one is not
-treated as virtual, so the workaround is not applied there even if the
-compositor renders on the virtio GPU.
+Decision: run them as X11 clients (XWayland) on a virtual display, defined by
+`display_is_virtual` in `lib/common.sh`:
 
+1. `systemd-detect-virt --vm --quiet` succeeds (the system is a VM: kvm, qemu,
+   vmware, oracle, microsoft, xen, parallels, ...). A missing
+   `systemd-detect-virt` means "not a VM": the workaround is never applied on
+   doubt.
+2. No `/sys/class/drm/cardN` has a physical GPU PCI vendor: `0x1002` (AMD),
+   `0x8086` (Intel) or `0x10de` (NVIDIA), compared case-insensitively. Only
+   `cardN` entries count (connectors such as `card0-Virtual-1` are not cards).
+   A card with another vendor (virtio 1af4, VMware 15ad, VirtualBox 80ee, QXL
+   1b36, bochs 1234) or without a readable vendor file (Hyper-V's `hyperv_drm`
+   is on VMBus and has none) does not count as physical.
+
+So it covers every hypervisor, and excludes bare metal and a VM with a
+passed-through GPU (the compositor may render on the real GPU there, where
+native Wayland works).
+
+- **Why it applies in every VM, not only where the crash was seen**: XWayland
+  works in every VM, so the flag is harmless there, and the 3D settings (and
+  so whether the crash happens) vary by hypervisor and by VM configuration; a
+  rule keyed on the crash itself cannot be detected from the guest.
 - **Why x11 and not `--disable-gpu-compositing`**: both work; x11 keeps GPU
   rasterisation, so it is the lighter loss.
-- **Why only on virtio**: on real hardware native Wayland works and the flag
-  would only make the browsers worse (XWayland, blurry fractional scaling).
-- **Chromium**: `/etc/chromium.d/kali-cosmic-setup-virtio-gpu` (a marker comment
+- **Why not on bare metal**: native Wayland works and the flag would only make
+  the browsers worse (XWayland, blurry fractional scaling).
+- **Naming and backward compatibility**: the first version applied this on virtio
+  only, with marker `kali-cosmic-setup: virtio-gpu browser workaround` and
+  `/etc/chromium.d/kali-cosmic-setup-virtio-gpu`. Both were renamed (`virtual-gpu`)
+  because virtio is no longer the rule. Machines that already have the old files
+  are migrated: either marker is recognised as ours, the old-named drop-in is
+  always removed (a change), the new one is written, and the Brave entry keeps
+  its path and is regenerated with the new marker. A file at the old name without
+  a marker is left alone.
+- **Chromium**: `/etc/chromium.d/kali-cosmic-setup-virtual-gpu` (a marker comment
   plus `export CHROMIUM_FLAGS="$CHROMIUM_FLAGS --ozone-platform=x11"`). Debian's
   `/usr/bin/chromium` wrapper sources `/etc/chromium.d/*`, so every launch path
   is covered, a terminal included. Decision: the file is written whether or not
@@ -209,16 +233,17 @@ compositor renders on the virtio GPU.
   `update-desktop-database` runs on that directory only when something changed
   (non-fatal). A `brave-browser` typed in a terminal does not read it and
   still needs the flag by hand. No `$HOME` file is written.
-- **Marker**: both files carry `kali-cosmic-setup: virtio-gpu browser
-  workaround`. On a GPU that is not virtual, a file with the marker is removed
-  (logged as a change); a file without the marker, at either path and on any
-  GPU, is never replaced or removed: it is left alone with a warning (so no
+- **Marker**: both files carry `kali-cosmic-setup: virtual-gpu browser
+  workaround` (the old `virtio-gpu` marker is also recognised). Where the
+  display is not virtual, a file with a marker is removed (logged as a change);
+  a file without a marker, at either path and anywhere, is never replaced or
+  removed: it is left alone with a warning (so no
   backup is ever needed).
 - Dry-run writes and removes nothing; a second run reports `total changes: 0`.
 
 ## Hardware detection
 
-The virtio check above (`gpu_is_virtual`); nothing else.
+The virtual display check above (`display_is_virtual`); nothing else.
 
 ## Idempotency check
 
@@ -238,8 +263,8 @@ sudo rm -f /etc/apt/sources.list.d/brave-browser.sources /etc/apt/preferences.d/
 # the module already removes the brave-keyring symlink below; purge removes it too
 sudo rm -f /etc/apt/trusted.gpg.d/brave-browser-release.gpg
 sudo apt-get update
-# virtio GPU browser workaround (only exists on a virtio GPU)
-sudo rm -f /etc/chromium.d/kali-cosmic-setup-virtio-gpu /usr/local/share/applications/brave-browser.desktop
+# VM browser workaround (only exists in a virtual machine; the virtio-gpu name is the older one)
+sudo rm -f /etc/chromium.d/kali-cosmic-setup-virtual-gpu /etc/chromium.d/kali-cosmic-setup-virtio-gpu /usr/local/share/applications/brave-browser.desktop
 # core packages: purge any you do not want, for example
 sudo apt-get purge <package>      # one at a time; dependencies shared with other software are refused
 ```
@@ -257,7 +282,7 @@ apt-cache policy brave-browser            # candidate from the Brave repo, prior
 apt-cache policy brave-origin             # other Brave package: blocked, Candidate: (none)
 ls -l /etc/apt/trusted.gpg.d/brave-browser-release.gpg   # must not exist
 gpg --show-keys --with-colons /etc/apt/keyrings/brave-browser-archive-keyring.gpg | grep '^fpr'
-ls /etc/chromium.d/kali-cosmic-setup-virtio-gpu /usr/local/share/applications/brave-browser.desktop   # virtio GPU only
+ls /etc/chromium.d/kali-cosmic-setup-virtual-gpu /usr/local/share/applications/brave-browser.desktop   # virtual machine only
 ./install.sh --only packages --dry-run    # "Nothing to change"
 tests/test-packages.sh
 ```

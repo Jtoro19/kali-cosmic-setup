@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tests/test-hardware.sh: detect_cpu_vendor and detect_gpu_vendors from
+# tests/test-hardware.sh: detect_cpu_vendor, detect_gpu_vendors and display_is_virtual from
 # lib/common.sh, against a fake /proc/cpuinfo (KCS_ROOT) and a fake lspci.
 # shellcheck disable=SC2319
 set -uo pipefail
@@ -84,41 +84,58 @@ check "gpu: without lspci, sysfs vendors come out sorted amd intel nvidia" $?
 [[ "$(drm 0x1af4 2>&1)" == "" ]]
 check "gpu: without lspci, a virtio card in sysfs gives an empty list and no warning" $?
 
-# gpu_is_virtual: true only when there is at least one cardN and all are virtio.
-virt() { # virt <vendor id...>: fake cards (and connector dirs), then gpu_is_virtual
-  local i=0 v
+# display_is_virtual: a VM (systemd-detect-virt --vm succeeds) where no cardN
+# has a physical GPU vendor (AMD 1002, Intel 8086, NVIDIA 10de).
+# shellcheck source=tests/lib-fakes.sh
+source "$REPO_ROOT/tests/lib-fakes.sh"
+make_fakes "$WORK/bin"
+virt() { # virt <hypervisor|none> <vendor id|novendor...>: fake cards and connectors, then display_is_virtual
+  local hv="$1" i=0 v
+  shift
   rm -rf -- "$WORK/root/sys"
   mkdir -p "$WORK/root/sys/class/drm"
   for v in "$@"; do
     mkdir -p "$WORK/root/sys/class/drm/card$i/device" "$WORK/root/sys/class/drm/card$i-Virtual-1"
-    echo "$v" >"$WORK/root/sys/class/drm/card$i/device/vendor"
+    [[ "$v" == novendor ]] || echo "$v" >"$WORK/root/sys/class/drm/card$i/device/vendor"
     i=$((i + 1))
   done
-  KCS_ROOT="$WORK/root" gpu_is_virtual
+  FAKE_VIRT="$hv" PATH="$WORK/bin:$PATH" KCS_ROOT="$WORK/root" display_is_virtual
 }
-virt 0x1af4
-check "virtual: a single virtio card is virtual" $?
-virt 0x1af4 0x1AF4
-check "virtual: two virtio cards (any case) are virtual" $?
-! virt 0x8086
-check "virtual: an Intel card is not virtual" $?
-! virt 0x1af4 0x1002
-check "virtual: virtio plus a real GPU is not virtual" $?
-! virt
-check "virtual: no card at all is not virtual" $?
+virt kvm 0x1af4
+check "virtual: KVM with a virtio card" $?
+virt vmware 0x15ad
+check "virtual: VMware with its 0x15ad card" $?
+virt oracle 0x80ee
+check "virtual: VirtualBox with its 0x80ee card" $?
+virt microsoft novendor
+check "virtual: Hyper-V with a card that has no vendor file" $?
+virt kvm 0x1b36 0x1234
+check "virtual: KVM with QXL and bochs cards" $?
+virt kvm
+check "virtual: a VM without any card" $?
+! virt kvm 0x1af4 0x10de
+check "virtual: a VM with a passed-through NVIDIA card is not virtual" $?
+! virt kvm 0x1002
+check "virtual: a VM with only an AMD card is not virtual" $?
+! virt kvm 0x1af4 0x8086
+check "virtual: a VM with a passed-through Intel card is not virtual" $?
+! virt vmware 0x15ad 0x10DE
+check "virtual: the vendor is compared case-insensitively" $?
+! virt none 0x1af4
+check "virtual: bare metal with a virtio card is not virtual" $?
+! virt none 0x15ad
+check "virtual: bare metal with any card is not virtual" $?
 rm -rf -- "$WORK/root/sys"
 mkdir -p "$WORK/root/sys/class/drm/card0-Virtual-1/device"
-echo 0x1af4 >"$WORK/root/sys/class/drm/card0-Virtual-1/device/vendor"
-! KCS_ROOT="$WORK/root" gpu_is_virtual
+echo 0x10de >"$WORK/root/sys/class/drm/card0-Virtual-1/device/vendor"
+FAKE_VIRT=kvm PATH="$WORK/bin:$PATH" KCS_ROOT="$WORK/root" display_is_virtual
 check "virtual: a connector entry (card0-Virtual-1) is not a card" $?
 rm -rf -- "$WORK/root/sys"
-! KCS_ROOT="$WORK/root" gpu_is_virtual
-check "virtual: no /sys/class/drm is not virtual" $?
-rm -rf -- "$WORK/root/sys"
-mkdir -p "$WORK/root/sys/class/drm/card0/device" "$WORK/root/sys/class/drm/card1/device"
-echo 0x1af4 >"$WORK/root/sys/class/drm/card0/device/vendor"
-! KCS_ROOT="$WORK/root" gpu_is_virtual
-check "virtual: a card whose vendor cannot be read counts as real hardware" $?
+FAKE_VIRT=kvm PATH="$WORK/bin:$PATH" KCS_ROOT="$WORK/root" display_is_virtual
+check "virtual: a VM without /sys/class/drm is virtual" $?
+virt kvm 0x1af4
+! KCS_ROOT="$WORK/root" PATH="$WORK/empty" display_is_virtual
+check "virtual: without systemd-detect-virt it is not virtual (never on doubt)" $?
 
 if ((failures > 0)); then
   printf '%d check(s) failed\n' "$failures"

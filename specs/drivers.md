@@ -5,7 +5,7 @@
 Install the CPU microcode and the GPU userspace drivers that match the
 hardware, detected at run time. Nothing is hardcoded to one vendor. It must
 work on real hardware (the owner's host: AMD Ryzen with a Radeon RX 7900 XTX)
-and on a VM with a virtio GPU.
+and on a VM (any hypervisor: virtio, VMware, VirtualBox, Hyper-V, ...).
 
 ## Source of truth
 
@@ -48,7 +48,7 @@ Test-only overrides: `DRIVERS_CPU_VENDOR` (amd, intel, other) and
 `DRIVERS_GPU_VENDORS` (space-separated; set even to empty it replaces
 detection, so an empty value simulates a VM).
 
-- Virtio GPU (VM) or any unknown vendor: the vendor-specific parts are skipped
+- A VM's virtual GPU (virtio, VMware, VirtualBox, Hyper-V, ...) or any unknown vendor: the vendor-specific parts are skipped
   with an info line, no warning; the mesa base still gives llvmpipe/virgl and
   lavapipe Vulkan, so no separate swrast package is needed.
 - Without `lspci`, detection falls back to the vendor files of

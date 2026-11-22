@@ -86,29 +86,34 @@ _packages_brave_untrust() {
   fi
 }
 
-# --- Browsers on a virtio GPU: run as X11 clients ---------------------------
-# On a QEMU/KVM guest with a virtio GPU, Chromium and Brave crash as native
-# Wayland clients on COSMIC (see specs/packages.md). Only on such a GPU (never
-# on real hardware) Chromium gets a /etc/chromium.d drop-in and Brave a
-# generated desktop entry in /usr/local/share/applications that wins over the
-# packaged one. Both carry the marker, which is how the module recognises them.
-_PACKAGES_VGPU_MARKER="kali-cosmic-setup: virtio-gpu browser workaround"
+# --- Browsers in a virtual machine: run as X11 clients ------------------------
+# In a VM with a virtual display (display_is_virtual: a hypervisor and no
+# physical GPU) Chromium and Brave can crash as native Wayland clients on COSMIC
+# (see specs/packages.md). Only there (never on bare metal) Chromium gets a
+# /etc/chromium.d drop-in and Brave a generated desktop entry in
+# /usr/local/share/applications that wins over the packaged one. Both carry the
+# marker, which is how the module recognises them. The virtio-only version of
+# this workaround used another marker and drop-in name: both are still
+# recognised as ours and the old drop-in is removed.
+_PACKAGES_VGPU_MARKER="kali-cosmic-setup: virtual-gpu browser workaround"
+_PACKAGES_VGPU_OLD_MARKER="kali-cosmic-setup: virtio-gpu browser workaround"
 _PACKAGES_VGPU_FLAG="--ozone-platform=x11"
-_PACKAGES_VGPU_CHROMIUM="/etc/chromium.d/kali-cosmic-setup-virtio-gpu"
+_PACKAGES_VGPU_CHROMIUM="/etc/chromium.d/kali-cosmic-setup-virtual-gpu"
+_PACKAGES_VGPU_OLD_CHROMIUM="/etc/chromium.d/kali-cosmic-setup-virtio-gpu"
 _PACKAGES_VGPU_BRAVE_SRC="/usr/share/applications/brave-browser.desktop"
 _PACKAGES_VGPU_BRAVE_DEST="/usr/local/share/applications/brave-browser.desktop"
 
-# _packages_vgpu_drop <path> <content>: with a virtual GPU, make <path> hold
+# _packages_vgpu_drop <path> <content>: on a virtual display, make <path> hold
 # <content>; otherwise remove it. An empty <content> also means "remove". A
-# file without the marker is not ours: it is left alone (never replaced) with a
-# warning. Sets FILE_CHANGED like ensure_file_content.
+# file without either marker is not ours: it is left alone (never replaced)
+# with a warning. Sets FILE_CHANGED like ensure_file_content.
 _packages_vgpu_drop() {
   local path="$1" content="$2" real
   real="$(rootpath "$path")"
   FILE_CHANGED=0
-  if [[ -e "$real" ]] && ! grep -qF -- "$_PACKAGES_VGPU_MARKER" "$real"; then
+  if [[ -e "$real" ]] && ! grep -qF -e "$_PACKAGES_VGPU_MARKER" -e "$_PACKAGES_VGPU_OLD_MARKER" "$real"; then
     if [[ -n "$content" ]]; then
-      log_warn "$path exists without the kali-cosmic-setup marker: leaving it alone (the virtio-gpu browser workaround is not applied through it)"
+      log_warn "$path exists without the kali-cosmic-setup marker: leaving it alone (the virtual-gpu browser workaround is not applied through it)"
     else
       log_warn "$path exists without the kali-cosmic-setup marker: not ours, leaving it alone"
     fi
@@ -118,7 +123,7 @@ _packages_vgpu_drop() {
     ensure_file_content "$real" "$content"
   elif [[ -e "$real" ]]; then
     FILE_CHANGED=1
-    log_change "remove $path (virtio-gpu browser workaround, not needed on this GPU)"
+    log_change "remove $path (browser workaround, not needed here)"
     _priv_run "$real" rm -f -- "$real"
   fi
 }
@@ -166,13 +171,15 @@ _packages_plain_exe() {
 
 _packages_browsers_vgpu() {
   local chromium="" brave="" changed=0 dir
-  if gpu_is_virtual; then
-    chromium="# $_PACKAGES_VGPU_MARKER: Chromium crashes as a native Wayland client with a virtio GPU
+  if display_is_virtual; then
+    chromium="# $_PACKAGES_VGPU_MARKER: Chromium can crash as a native Wayland client in a virtual machine
 export CHROMIUM_FLAGS=\"\$CHROMIUM_FLAGS $_PACKAGES_VGPU_FLAG\""
     if [[ -f "$(rootpath "$_PACKAGES_VGPU_BRAVE_SRC")" ]]; then
       brave="$(_packages_brave_x11_entry)"
     fi
   fi
+  _packages_vgpu_drop "$_PACKAGES_VGPU_OLD_CHROMIUM" ""
+  ((FILE_CHANGED)) && changed=1
   _packages_vgpu_drop "$_PACKAGES_VGPU_CHROMIUM" "$chromium"
   ((FILE_CHANGED)) && changed=1
   _packages_vgpu_drop "$_PACKAGES_VGPU_BRAVE_DEST" "$brave"
