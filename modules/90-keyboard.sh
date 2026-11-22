@@ -298,7 +298,9 @@ _kbd_verify() {
     [[ -z "$x" || "$(_kbd_dc "$dump" "$q")" != "$x" ]] ||
       bad+=("debconf $_KBD_DEBCONF_PKG/$q is still the installer's \"$x\"")
   done
-  [[ -n "$(_kbd_dc "$dump" variant)" ]] || bad+=("debconf $_KBD_DEBCONF_PKG/variant is empty")
+  if [[ -n "$dump" && -z "$(_kbd_dc "$dump" variant)" ]]; then
+    log_warn "debconf $_KBD_DEBCONF_PKG/variant is empty; the display answer is cosmetic"
+  fi
   if [[ -z "$dump" ]]; then
     log_warn "debconf-show returned nothing for $_KBD_DEBCONF_PKG: the debconf answers could not be read"
   fi

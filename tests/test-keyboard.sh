@@ -78,6 +78,8 @@ vd="$(awk -v l="$fl:" -v v="$fv" '/^! /{ c = ($2 == "variant"); next } c && $1 =
 # FAKE_DC_LOCALIZED=1: the display answers come out worded differently (localized).
 [ -n "${FAKE_DC_LOCALIZED:-}" ] && { ld="[loc] $ld"; vd="[loc] $vd"; }
 set_q layout "$ld"; [ -n "${FAKE_DC_KEEP_VARIANT:-}" ] || set_q variant "$ld${vd:+ - $vd}"
+# FAKE_DC_EMPTY_VARIANT=1: the package leaves the variant display answer empty.
+[ -n "${FAKE_DC_EMPTY_VARIANT:-}" ] && set_q variant ""
 sed -i -e "s|^XKBMODEL=.*|XKBMODEL=\"$(get modelcode)\"|" -e "s|^XKBLAYOUT=.*|XKBLAYOUT=\"$(get layoutcode)\"|" \
   -e "s|^XKBVARIANT=.*|XKBVARIANT=\"$(get variantcode)\"|" -e "s|^XKBOPTIONS=.*|XKBOPTIONS=\"$(get optionscode)\"|" "$f"
 EOS
@@ -561,6 +563,10 @@ check "M13c: localized display wording succeeds with a warning" $?
 FAKE_DC_LOCALIZED=1 kb --keyboard us:altgr-intl
 [[ "$rc" == 0 ]] && grep -q 'total changes: 0' "$WORK/out" && [[ "$(calls dpkg-reconfigure)" == 0 && "$(calls debconf-set-selections)" == 0 ]]
 check "M13c: and the second run with that wording changes nothing" $?
+reset_state
+FAKE_DC_EMPTY_VARIANT=1 kb --keyboard us:altgr-intl
+[[ "$rc" == 0 ]] && grep -qi 'warn.*variant.*empty' "$WORK/out" && [[ "$(dc variantcode)" == altgr-intl ]]
+check "M13c: an empty variant display answer only warns (it is cosmetic)" $?
 reset_state
 kb --keyboard latam
 [[ "$rc" == 0 ]]
