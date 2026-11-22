@@ -1,0 +1,59 @@
+# Core: everyday desktop and CLI packages from Kali. One per line, # starts a comment.
+# Port of the eos core.pacman list; see specs/packages.md for every rename and every
+# dropped entry. Brave (vendor apt repo) and PeaZip (upstream .deb) are installed by
+# modules/15-packages.sh, not from this list.
+
+# Browser
+firefox-esr
+
+# CLI tools (binaries: bat is batcat, fd-find is fdfind, tealdeer is tldr)
+bat
+eza
+fd-find
+ripgrep
+direnv
+htop
+glances
+nvtop
+duf
+tealdeer
+tree
+plocate
+apt-file
+inxi
+hwinfo
+mesa-utils
+rsync
+wget
+unzip
+unrar
+bash-completion
+neovim
+nano
+man-db
+manpages
+whois
+less
+
+# Fonts
+fonts-noto-core
+fonts-noto-cjk
+fonts-noto-color-emoji
+fonts-noto-extra
+fonts-dejavu
+fonts-liberation
+fonts-open-sans
+ttf-bitstream-vera
+fonts-cantarell
+
+# Codecs and audio tools
+gstreamer1.0-libav
+gstreamer1.0-pipewire
+gstreamer1.0-plugins-bad
+gstreamer1.0-plugins-ugly
+pavucontrol
+
+# Desktop helpers
+gnome-keyring
+xdg-user-dirs
+xdg-utils

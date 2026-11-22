@@ -152,6 +152,112 @@ h "apt_ensure_pin test 'Package: x'" >/dev/null
 compgen -G "$PIN.bak.*" >/dev/null
 check "apt_ensure_pin: changed content is backed up" $?
 
+# --- apt_install_key: a keyring with several primary keys -------------------
+# Vendors such as Brave ship one keyring file holding more than one key. The
+# expected value is then the full set of fingerprints (space or comma separated)
+# and the file must hold exactly that set.
+F1=DBF1A116C220B8C7164F98230686B78420038257
+F2=47D32A74E9A9E013A4B4926C68D513D36A73CD96
+F3=B2A3DCA350E67256740DF904DE4EC67BE4B0DCA0
+MULTI=/etc/apt/keyrings/multi.gpg
+printf '%s\nFPR=%s\nFPR=%s\nFPR=%s\n%s\n' '-----BEGIN PGP PUBLIC KEY BLOCK-----' "$F1" "$F2" "$F3" \
+  '-----END PGP PUBLIC KEY BLOCK-----' >"$FAKE_KEY_FILE"
+h "apt_install_key '$KEYURL' '$MULTI' '$F1 $F2 $F3'" >/dev/null
+check "apt_install_key: a three-key keyring matching the full set is installed" $?
+h "apt_install_key '$KEYURL' '$MULTI' '$F3,$F1,$F2'" >"$WORK/out"
+! grep -q '\[change\]' "$WORK/out"
+check "apt_install_key: the set is order-insensitive and a second run changes nothing" $?
+rm -f -- "$KCS_ROOT$MULTI"
+! h "apt_install_key '$KEYURL' '$MULTI' '$F1 $F2'" >/dev/null 2>&1
+check "apt_install_key: a keyring with an extra key is refused" $?
+[[ ! -e "$KCS_ROOT$MULTI" ]]
+check "apt_install_key: nothing is installed when the set differs" $?
+! h "apt_install_key '$KEYURL' '$MULTI' '$F1 $F2 $F3 $FPR'" >/dev/null 2>&1
+check "apt_install_key: a keyring missing an expected key is refused" $?
+fake_key_file "$FAKE_KEY_FILE" "$FPR"
+
+# --- install_package_list ---------------------------------------------------
+# files/packages/<group>.apt: one package per line, # comments (whole line or
+# trailing) and blank lines ignored. Only missing packages with an apt
+# candidate are installed; one without a candidate is skipped with a warning.
+LISTREPO="$WORK/listrepo"
+mkdir -p "$LISTREPO/files/packages"
+cat >"$LISTREPO/files/packages/t.apt" <<'EOL'
+# a comment line
+
+alpha
+  gamma   # trailing comment, indented entry
+delta
+
+# another
+epsilon
+EOL
+: >"$FAKE_STATE/apt.log"
+printf 'alpha\n' >"$FAKE_STATE/installed"
+h "REPO_ROOT='$LISTREPO'; install_package_list t" >"$WORK/out" 2>&1
+check "install_package_list: succeeds" $?
+grep -q 'install .*gamma delta epsilon' "$FAKE_STATE/apt.log" && ! grep -Eq 'alpha|comment|another' "$FAKE_STATE/apt.log"
+check "install_package_list: comments, blanks and installed packages are not passed to apt" $?
+[[ "$(grep -c ' update \[' "$FAKE_STATE/apt.log")" == 1 ]]
+check "install_package_list: refreshes the lists once before installing" $?
+: >"$FAKE_STATE/apt.log"
+h "REPO_ROOT='$LISTREPO'; install_package_list t" >"$WORK/out" 2>&1
+[[ ! -s "$FAKE_STATE/apt.log" ]] && ! grep -q '\[change\]' "$WORK/out"
+check "install_package_list: everything installed means no apt call, no change" $?
+printf 'alpha\n' >"$FAKE_STATE/installed"
+: >"$FAKE_STATE/apt.log"
+FAKE_NO_CANDIDATE="gamma" h "REPO_ROOT='$LISTREPO'; install_package_list t" >"$WORK/out" 2>&1
+check "install_package_list: a package without a candidate does not fail the run" $?
+grep -q '\[warn\].*gamma' "$WORK/out" && grep -q 'install .*delta epsilon' "$FAKE_STATE/apt.log" && ! grep -q 'gamma' "$FAKE_STATE/apt.log"
+check "install_package_list: the unavailable package is warned about and skipped" $?
+! h "REPO_ROOT='$LISTREPO'; install_package_list nosuchgroup" >"$WORK/out" 2>&1
+check "install_package_list: a missing list file is an error" $?
+printf 'alpha\n' >"$FAKE_STATE/installed"
+: >"$FAKE_STATE/apt.log"
+h "REPO_ROOT='$LISTREPO'; DRY_RUN=1; install_package_list t" >"$WORK/out" 2>&1
+[[ ! -s "$FAKE_STATE/apt.log" ]] && grep -q 'would run' "$WORK/out"
+check "install_package_list: dry-run runs no apt-get" $?
+
+# --- download_verified ------------------------------------------------------
+PAYLOAD="$WORK/payload.bin"
+printf 'the payload\n' >"$PAYLOAD"
+PSUM="$(sha256sum "$PAYLOAD" | awk '{ print $1 }')"
+BADSUM=0000000000000000000000000000000000000000000000000000000000000000
+mkdir -p "$FAKE_STATE/curl-files" "$WORK/dl" "$WORK/tmp"
+cp -- "$PAYLOAD" "$FAKE_STATE/curl-files/payload.bin"
+DLURL=https://example.invalid/dir/payload.bin
+export TMPDIR="$WORK/tmp"
+: >"$FAKE_STATE/curl.log"
+h "download_verified '$DLURL' '$WORK/dl/ok.bin' '$PSUM'" >/dev/null
+check "download_verified: a matching checksum succeeds" $?
+cmp -s "$PAYLOAD" "$WORK/dl/ok.bin"
+check "download_verified: the verified file is at the destination" $?
+grep -qx "$DLURL" "$FAKE_STATE/curl.log"
+check "download_verified: it fetched the URL" $?
+! h "download_verified '$DLURL' '$WORK/dl/bad.bin' '$BADSUM'" >"$WORK/out" 2>&1
+check "download_verified: a checksum mismatch fails" $?
+[[ ! -e "$WORK/dl/bad.bin" ]] && grep -qi 'checksum' "$WORK/out"
+check "download_verified: nothing is left at the destination and the mismatch is reported" $?
+! h "download_verified '$DLURL' '$WORK/dl/empty.bin' ''" >"$WORK/out" 2>&1
+check "download_verified: an empty checksum is refused" $?
+! h "download_verified '$DLURL' '$WORK/dl/short.bin' 'abc123'" >"$WORK/out" 2>&1
+check "download_verified: a malformed checksum is refused" $?
+[[ ! -e "$WORK/dl/empty.bin" && ! -e "$WORK/dl/short.bin" ]]
+check "download_verified: refused checksums download nothing to the destination" $?
+FAKE_CURL_FAIL=1 h "download_verified '$DLURL' '$WORK/dl/fail.bin' '$PSUM'" >"$WORK/out" 2>&1
+[[ $? -ne 0 && ! -e "$WORK/dl/fail.bin" ]]
+check "download_verified: a failed download fails and leaves nothing" $?
+UPPER="$(printf '%s' "$PSUM" | tr 'a-f' 'A-F')"
+h "download_verified '$DLURL' '$WORK/dl/upper.bin' '$UPPER'" >/dev/null
+check "download_verified: an uppercase checksum is accepted" $?
+: >"$FAKE_STATE/curl.log"
+h "DRY_RUN=1; download_verified '$DLURL' '$WORK/dl/dry.bin' '$PSUM'" >"$WORK/out"
+[[ ! -s "$FAKE_STATE/curl.log" && ! -e "$WORK/dl/dry.bin" ]]
+check "download_verified: dry-run downloads nothing" $?
+[[ -z "$(ls -A "$WORK/tmp")" ]]
+check "download_verified: no temporary files are left behind" $?
+unset TMPDIR
+
 if ((failures > 0)); then
   printf '%d check(s) failed\n' "$failures"
   exit 1

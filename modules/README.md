@@ -82,10 +82,21 @@ changes.
   a different file is replaced:
   - `apt_install_key <url> <dest> <fingerprint>`: installs a signing key under
     `/etc/apt/keyrings` only after checking the expected full fingerprint with
-    `gpg` (ASCII keys are dearmored). A mismatch fails and installs nothing.
+    `gpg` (ASCII keys are dearmored). A keyring holding several keys takes all
+    fingerprints, space or comma separated in one argument, and must hold exactly
+    that set. A mismatch fails and installs nothing.
   - `apt_ensure_sources <name> <uri> <suite> <components> <signed-by>`: writes
     `/etc/apt/sources.list.d/<name>.sources` (deb822).
   - `apt_ensure_pin <name> <content>`: writes `/etc/apt/preferences.d/<name>`.
+- `install_package_list <group>`: installs `files/packages/<group>.apt` (one
+  package per line, `#` comments). Only missing packages are considered; one
+  with no apt candidate is skipped with a warning. Refreshes the lists once, and
+  only when something must be installed.
+- `apt_has_candidate <pkg>`, `pkg_version <pkg>`: read-only queries.
+- `download_verified <url> <dest> <sha256>`: downloads into a private temporary
+  directory, checks the SHA-256 and only then moves the file to `<dest>`. An
+  empty or malformed checksum is refused; there is no unverified mode.
+  Dry-run downloads nothing.
 - `rootpath <abs-path>`: the path under the test-only `KCS_ROOT` prefix
   (unchanged in a real run). Use it for system paths a test must redirect.
 - `FILE_CHANGED` is 1 after `install_file` or a helper built on it changed a

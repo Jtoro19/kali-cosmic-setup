@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+# modules/15-packages.sh: core everyday desktop and CLI packages from Kali, plus
+# Brave (vendor apt repo) and PeaZip (upstream .deb). See specs/packages.md.
+
+# shellcheck disable=SC2034  # metadata is read by install.sh
+MODULE_NAME="packages"
+# shellcheck disable=SC2034
+MODULE_DESC="Core everyday packages (Firefox ESR, CLI tools, fonts, codecs) plus Brave from its vendor repo and PeaZip from its upstream .deb"
+# shellcheck disable=SC2034
+MODULE_OPTIN=0
+# shellcheck disable=SC2034
+MODULE_DEPS=""
+
+# --- Brave: vendor apt repo (Brave's published Debian instructions) ---------
+_PACKAGES_BRAVE_REPO_NAME="brave-browser"
+_PACKAGES_BRAVE_REPO_URI="https://brave-browser-apt-release.s3.brave.com/"
+_PACKAGES_BRAVE_KEY_URL="https://brave-browser-apt-release.s3.brave.com/brave-browser-archive-keyring.gpg"
+_PACKAGES_BRAVE_KEY_DEST="/etc/apt/keyrings/brave-browser-archive-keyring.gpg"
+# Full fingerprints of the three "Brave Linux Release" primary keys that Brave's
+# keyring file holds (checked on 2026-11-22: the file contains exactly these, and
+# keys.openpgp.org publishes the same three). The key is installed only when the
+# file matches this set exactly. Brave documents no fingerprint; see the spec.
+_PACKAGES_BRAVE_KEY_FPRS="DBF1A116C220B8C7164F98230686B78420038257 47D32A74E9A9E013A4B4926C68D513D36A73CD96 B2A3DCA350E67256740DF904DE4EC67BE4B0DCA0"
+# Needed to fetch and verify the key.
+_PACKAGES_PREREQS=(gnupg curl ca-certificates)
+
+# --- PeaZip: upstream .deb from the GitHub release --------------------------
+# GTK2 build (the Qt6 build would drag Qt into a GTK/COSMIC desktop). The sha256
+# is the value in the release's own SHA256.txt (also the GitHub asset digest).
+_PACKAGES_PEAZIP_VERSION="11.4.0"
+_PACKAGES_PEAZIP_DEB="peazip_${_PACKAGES_PEAZIP_VERSION}.LINUX.GTK2-1_amd64.deb"
+_PACKAGES_PEAZIP_URL="https://github.com/peazip/PeaZip/releases/download/${_PACKAGES_PEAZIP_VERSION}/${_PACKAGES_PEAZIP_DEB}"
+_PACKAGES_PEAZIP_SHA256="b4ec801e857f232518cfc91d74690d27d35dbf911308b671d5156fc5c631956c"
+# The upstream .deb declares no dependencies; its GTK2 binary needs these.
+_PACKAGES_PEAZIP_RUNTIME=(libgtk2.0-0t64)
+
+# apt preferences: the first matching record wins, so the allow record for the
+# two Brave packages comes first and every other package of the repo is blocked.
+_packages_brave_pin() {
+  cat <<'PIN'
+Explanation: kali-cosmic-setup: only brave-browser and its keyring package may come from the Brave repo
+Package: brave-browser brave-keyring
+Pin: origin "brave-browser-apt-release.s3.brave.com"
+Pin-Priority: 500
+
+Explanation: kali-cosmic-setup: everything else from the Brave repo is blocked, it never replaces a Kali package
+Package: *
+Pin: origin "brave-browser-apt-release.s3.brave.com"
+Pin-Priority: -1
+PIN
+}
+
+# _packages_brave: key, sources, pin, then the package. The lists are refreshed
+# only when the repo, its key or its pin changed.
+_packages_brave() {
+  local before="$CHANGES"
+  ensure_packages "${_PACKAGES_PREREQS[@]}" || return 1
+  apt_install_key "$_PACKAGES_BRAVE_KEY_URL" "$_PACKAGES_BRAVE_KEY_DEST" \
+    "$_PACKAGES_BRAVE_KEY_FPRS" || return 1
+  apt_ensure_sources "$_PACKAGES_BRAVE_REPO_NAME" "$_PACKAGES_BRAVE_REPO_URI" stable main \
+    "$_PACKAGES_BRAVE_KEY_DEST" || return 1
+  apt_ensure_pin "$_PACKAGES_BRAVE_REPO_NAME" "$(_packages_brave_pin)" || return 1
+  if ((CHANGES > before)); then
+    apt_update_once --force || return 1
+  fi
+  ensure_packages brave-browser
+}
+
+# _packages_peazip: install the pinned upstream .deb unless this version or a
+# newer one is installed. PACKAGES_PEAZIP_SHA256 is a test-only override of the
+# pinned checksum (the tests serve a fixture, not the real .deb).
+_packages_peazip() {
+  local want="${PACKAGES_PEAZIP_SHA256:-$_PACKAGES_PEAZIP_SHA256}" cur dir rc=0
+  cur="$(pkg_version peazip)"
+  if pkg_installed peazip && [[ -n "$cur" ]] &&
+    [[ "$(printf '%s\n%s\n' "$_PACKAGES_PEAZIP_VERSION" "$cur" | sort -V | tail -n 1)" == "$cur" ]]; then
+    return 0
+  fi
+  ensure_packages "${_PACKAGES_PEAZIP_RUNTIME[@]}" || return 1
+  log_change "install peazip $_PACKAGES_PEAZIP_VERSION from the upstream .deb"
+  dir="$(mktemp -d)"
+  # apt reads the file as its unprivileged _apt user: the directory must be
+  # traversable and the file readable.
+  chmod 0755 "$dir"
+  download_verified "$_PACKAGES_PEAZIP_URL" "$dir/$_PACKAGES_PEAZIP_DEB" "$want" || rc=$?
+  if ((rc == 0)); then
+    chmod 0644 "$dir/$_PACKAGES_PEAZIP_DEB" 2>/dev/null || true
+    _apt_get_may_fail install "$dir/$_PACKAGES_PEAZIP_DEB" || rc=$?
+  fi
+  rm -rf -- "$dir"
+  if ((rc != 0)); then
+    log_error "peazip $_PACKAGES_PEAZIP_VERSION was not installed (exit $rc)"
+  fi
+  return "$rc"
+}
+
+module_apply() {
+  install_package_list core || return 1
+  _packages_brave || return 1
+  _packages_peazip || return 1
+}

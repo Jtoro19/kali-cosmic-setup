@@ -41,6 +41,15 @@ EOS
   cat >"$bin/dpkg-query" <<'EOS'
 #!/bin/sh
 for a in "$@"; do pkg="$a"; done
+# -f='${Version}': the version recorded in $FAKE_STATE/versions ("name version").
+case "$*" in
+  *'${Version}'*)
+    v="$(sed -n "s/^$pkg //p" "$FAKE_STATE/versions" 2>/dev/null | head -n 1)"
+    [ -n "$v" ] || exit 1
+    printf '%s' "$v"
+    exit 0
+    ;;
+esac
 if grep -qx -- "$pkg" "$FAKE_STATE/installed" 2>/dev/null; then
   printf 'install ok installed'
   exit 0
@@ -78,7 +87,23 @@ for a in "$@"; do
       if [ -z "$cmd" ]; then cmd="$a"
       else
         pk="$pk $a"
-        if [ "$cmd" = install ] && [ "$sim" = 0 ]; then echo "$a" >>"$FAKE_STATE/installed"; fi
+        if [ "$cmd" = install ] && [ "$sim" = 0 ]; then
+          case "$a" in
+            # A local .deb: FAKE_DEB_PACKAGE (default peazip) becomes installed at
+            # FAKE_DEB_VERSION; the file must exist when apt-get runs.
+            *.deb)
+              if [ -f "$a" ]; then echo "deb-file-present $a" >>"$FAKE_STATE/all.log"
+              else echo "deb-file-MISSING $a" >>"$FAKE_STATE/all.log"; exit 100; fi
+              [ -n "${FAKE_APT_FAIL_DEB:-}" ] && exit 100
+              dp="${FAKE_DEB_PACKAGE:-peazip}"
+              echo "$dp" >>"$FAKE_STATE/installed"
+              grep -v "^$dp " "$FAKE_STATE/versions" >"$FAKE_STATE/versions.new" 2>/dev/null
+              echo "$dp ${FAKE_DEB_VERSION:-11.4.0}" >>"$FAKE_STATE/versions.new"
+              mv -- "$FAKE_STATE/versions.new" "$FAKE_STATE/versions"
+              ;;
+            *) echo "$a" >>"$FAKE_STATE/installed" ;;
+          esac
+        fi
       fi
       ;;
   esac
@@ -126,7 +151,13 @@ while [ $# -gt 0 ]; do
   shift
 done
 echo "$url" >>"$FAKE_STATE/curl.log"
-cp -- "$FAKE_KEY_FILE" "$out"
+[ -n "${FAKE_CURL_FAIL:-}" ] && exit 22
+# $FAKE_STATE/curl-files/<basename of the URL> overrides the default payload.
+if [ -f "$FAKE_STATE/curl-files/${url##*/}" ]; then
+  cp -- "$FAKE_STATE/curl-files/${url##*/}" "$out"
+else
+  cp -- "$FAKE_KEY_FILE" "$out"
+fi
 EOS
 
   # gpg: a fake that reads the fingerprint from a "FPR=<hex>" line in the key
@@ -148,10 +179,12 @@ while [ $# -gt 0 ]; do
 done
 case "$mode" in
   show)
-    fpr="$(sed -n 's/^FPR=//p' "$in")"
-    [ -n "$fpr" ] || exit 2
-    echo "pub:-:255:22:0000000000000000:1700000000:::-:::scESC:::::::"
-    echo "fpr:::::::::$fpr:"
+    fprs="$(sed -n 's/^FPR=//p' "$in")"
+    [ -n "$fprs" ] || exit 2
+    for fpr in $fprs; do
+      echo "pub:-:255:22:0000000000000000:1700000000:::-:::scESC:::::::"
+      echo "fpr:::::::::$fpr:"
+    done
     ;;
   dearmor) cp -- "$in" "$out" ;;
   *) exit 99 ;;
@@ -280,6 +313,18 @@ if [ -n "${FAKE_LN_NOOP_NTH:-}" ]; then
   [ "$(wc -l <"$FAKE_STATE/ln.count")" -eq "$FAKE_LN_NOOP_NTH" ] && exit 0
 fi
 exec /usr/bin/ln "$@"
+EOS
+
+  # apt-cache policy <pkg>: "Candidate: (none)" for the packages listed in
+  # FAKE_NO_CANDIDATE (space separated), a version for the others.
+  cat >"$bin/apt-cache" <<'EOS'
+#!/bin/sh
+for a in "$@"; do pkg="$a"; done
+echo "$pkg:"
+case " ${FAKE_NO_CANDIDATE:-} " in
+  *" $pkg "*) echo "  Installed: (none)"; echo "  Candidate: (none)" ;;
+  *) echo "  Installed: (none)"; echo "  Candidate: 1.0-1" ;;
+esac
 EOS
 
   chmod +x "$bin"/*

@@ -301,6 +301,13 @@ _apt_get() {
     -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@"
 }
 
+# _apt_get_may_fail <apt-get args...>: like _apt_get but returns the status
+# instead of ending the module, for a caller that must clean up first.
+_apt_get_may_fail() {
+  run_sudo_may_fail env DEBIAN_FRONTEND=noninteractive apt-get -y \
+    -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@"
+}
+
 # pkg_installed <pkg>: true when dpkg says the package is fully installed.
 # A package removed but with config files left is not installed.
 pkg_installed() {
@@ -351,6 +358,96 @@ ensure_packages() {
   _apt_get install "${opts[@]}" "${missing[@]}"
 }
 
+# apt_has_candidate <pkg>: true when apt knows a version to install. The output
+# is captured first: a `grep -q` in a pipe would end apt-cache early and
+# pipefail would report that as a failure.
+apt_has_candidate() {
+  local out
+  out="$(apt-cache policy "$1" 2>/dev/null)" || return 1
+  [[ "$out" =~ Candidate:\ [^\(] ]]
+}
+
+# pkg_version <pkg>: print the installed version of a package, nothing when it
+# is not installed.
+pkg_version() {
+  # shellcheck disable=SC2016  # ${Version} is dpkg-query syntax, not shell
+  dpkg-query -W -f='${Version}' -- "$1" 2>/dev/null || true
+}
+
+# _read_package_file <file>: print one package per line, dropping comments
+# (whole-line or trailing) and blank lines. Prints nothing when missing.
+_read_package_file() {
+  [[ -f "$1" ]] || return 0
+  sed -e 's/#.*//' -e 's/[[:space:]]*$//' -e 's/^[[:space:]]*//' -- "$1" | grep -v '^$' || true
+}
+
+# install_package_list <group>: install the packages of files/packages/<group>.apt
+# (one per line, # comments). Only the missing ones are looked at; one without
+# an apt candidate (for example a component that is not enabled) is skipped with
+# a warning so the rest still installs. The lists are refreshed once, and only
+# when something has to be installed.
+install_package_list() {
+  local group="$1" file="$REPO_ROOT/files/packages/$1.apt" pkg
+  local -a all=() missing=() install=()
+  if [[ ! -f "$file" ]]; then
+    log_error "install_package_list: no package list for group '$group' ($file)"
+    return 1
+  fi
+  mapfile -t all < <(_read_package_file "$file")
+  for pkg in "${all[@]}"; do
+    pkg_installed "$pkg" || missing+=("$pkg")
+  done
+  if ((${#missing[@]} == 0)); then
+    return 0
+  fi
+  apt_update_once || return 1
+  for pkg in "${missing[@]}"; do
+    if apt_has_candidate "$pkg"; then
+      install+=("$pkg")
+    else
+      log_warn "$pkg is not available from apt (is the component enabled in your sources?); skipping it"
+    fi
+  done
+  if ((${#install[@]} == 0)); then
+    return 0
+  fi
+  ensure_packages "${install[@]}"
+}
+
+# download_verified <url> <dest> <sha256>: download <url> and install it at
+# <dest> only when its SHA-256 equals <sha256> (64 hex digits, any case). An
+# empty or malformed checksum is refused before anything is downloaded: there
+# is no unverified mode. The download happens in a private temporary directory
+# that is always removed. Returns non-zero, leaving <dest> untouched, on a
+# download or checksum failure. Dry-run downloads nothing.
+download_verified() {
+  local url="$1" dest="$2" sum="${3,,}" tmp rc=0
+  if [[ ! "$sum" =~ ^[0-9a-f]{64}$ ]]; then
+    log_error "download_verified: refusing $url without a valid SHA-256 checksum"
+    return 1
+  fi
+  if [[ "$DRY_RUN" == "1" ]]; then
+    log_info "[dry-run] would download $url and verify SHA-256 $sum"
+    return 0
+  fi
+  tmp="$(mktemp -d)"
+  curl -fsSL -o "$tmp/download" -- "$url" || rc=$?
+  if ((rc != 0)); then
+    log_error "cannot download $url (exit $rc)"
+    rm -rf -- "$tmp"
+    return 1
+  fi
+  if ! printf '%s  download\n' "$sum" | (cd "$tmp" && sha256sum -c --status); then
+    log_error "checksum mismatch for $url: expected SHA-256 $sum, got $(sha256sum "$tmp/download" | awk '{ print $1 }'); nothing was installed"
+    rm -rf -- "$tmp"
+    return 1
+  fi
+  mkdir -p -- "$(dirname "$dest")"
+  mv -f -- "$tmp/download" "$dest" || rc=$?
+  rm -rf -- "$tmp"
+  return "$rc"
+}
+
 # _gpg_primary_fingerprints <file>: print the fingerprint of every primary key
 # in a key file (armored or binary), one per line. Uses a throw-away keyring
 # directory so nothing is written to ~/.gnupg.
@@ -362,17 +459,21 @@ _gpg_primary_fingerprints() {
   rm -rf -- "$home"
 }
 
-# _key_has_fingerprint <file> <fingerprint>: true when the file holds exactly
-# one primary key and its fingerprint equals the expected one.
+# _key_has_fingerprint <file> <fingerprints>: true when the primary keys in the
+# file are exactly the expected ones. <fingerprints> is one full fingerprint or
+# several separated by spaces or commas (a vendor keyring that holds more than
+# one key); the order does not matter, an extra or a missing key fails.
 _key_has_fingerprint() {
-  local fprs
-  fprs="$(_gpg_primary_fingerprints "$1")"
-  [[ -n "$fprs" && "$fprs" == "${2^^}" ]]
+  local got want
+  got="$(_gpg_primary_fingerprints "$1" | sort | tr '\n' ' ')"
+  want="$(printf '%s' "${2^^}" | tr ',' ' ' | tr -s ' ' '\n' | sed '/^$/d' | sort | tr '\n' ' ')"
+  [[ -n "$got" && "$got" == "$want" ]]
 }
 
-# apt_install_key <url> <dest> <fingerprint>: install an apt signing key at
+# apt_install_key <url> <dest> <fingerprint...>: install an apt signing key at
 # <dest> (for example /etc/apt/keyrings/x.gpg) only after checking that it has
-# exactly the expected full fingerprint. An ASCII-armored key is dearmored.
+# exactly the expected full fingerprint (or, for a keyring holding several
+# keys, exactly the expected set, space or comma separated in one argument). An ASCII-armored key is dearmored.
 # Needs gpg and curl (or wget); the caller installs gnupg and curl first.
 # Returns non-zero, installing nothing, on a download or fingerprint failure.
 # Idempotent: when <dest> already holds that fingerprint nothing is downloaded.
