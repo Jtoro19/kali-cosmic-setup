@@ -251,6 +251,65 @@ ap
 [[ "$rc" == 0 && -L "$WI_DESKTOP" && "$(cat "$WORK/outside/$WI_ID.desktop")" == x ]] && grep -q '\[warn\].*symlink' "$WORK/out"
 check "symlink: a desktop entry linked outside the home directory is skipped with a warning, the link is not replaced" $?
 
+# --- the marker is recorded only after every artifact is installed ----------------------------
+reset_state
+mkdir -p "$HOME_DIR/.local/share/icons"
+FAKE_NOT_OWNED="$HOME_DIR/.local/share/icons" ap
+[[ "$rc" == 0 && ! -e "$WI_BIN" && ! -e "$MARK/cosmic-ext-applet-workspace-icons.commit" ]] &&
+  [[ "$(grep -c 'build --release' "$FAKE_STATE/cargo.log")" == 1 ]] && ! grep -q "$HOME_DIR" "$FAKE_STATE/sudo.log"
+check "marker: an icon directory owned by someone else skips the whole Workspace Icons install (no binary, no marker, no build); Lock Keys still builds" $?
+FAKE_NOT_OWNED="$HOME_DIR/.local/share/icons" ap
+[[ "$rc" == 0 && ! -e "$WI_BIN" && ! -e "$MARK/cosmic-ext-applet-workspace-icons.commit" ]]
+check "marker: a second run with the same obstacle still records nothing" $?
+reset_state
+mkdir -p "$HOME_DIR/.local/share/metainfo"
+FAKE_NOT_OWNED="$HOME_DIR/.local/share/metainfo" ap
+[[ ! -e "$WI_BIN" && ! -e "$MARK/cosmic-ext-applet-workspace-icons.commit" ]]
+check "marker: a metainfo directory owned by someone else also prevents the binary and the marker" $?
+
+# --- an applet registered but its binary skipped ------------------------------------------------------
+reset_state
+mkdir -p "$HOME_DIR/.local/bin"
+FAKE_NOT_OWNED="$HOME_DIR/.local/bin" ap
+[[ -f "$WI_DESKTOP" ]] && grep -q '\[warn\].*Workspace Icons.*registered.*binary.*skipped' "$WORK/out"
+check "registered, not installed: the run warns that the desktop entry exists but the binary was skipped" $?
+reset_state
+ap
+! grep -q 'registered' "$WORK/out"
+check "registered, not installed: no such warning on a normal run" $?
+
+# --- symlink loop ----------------------------------------------------------------------------------------
+reset_state
+mkdir -p "$HOME_DIR/.local"
+ln -s "$HOME_DIR/.local/loop-b" "$HOME_DIR/.local/loop-a"
+ln -s "$HOME_DIR/.local/loop-a" "$HOME_DIR/.local/loop-b"
+ln -s "$HOME_DIR/.local/loop-a" "$HOME_DIR/.local/bin"
+ap
+[[ "$rc" == 0 && ! -e "$WI_BIN" ]] && grep -q '\[warn\].*loop' "$WORK/out" && ! grep -q '\[error\]' "$WORK/out"
+check "symlink loop: ~/.local/bin looping is a clean skip with a warning (exit 0, no marker)" $?
+
+# --- Workspace Icons config follows XDG_CONFIG_HOME ----------------------------------------------------------
+reset_state
+XDG_CONFIG_HOME="$WORK/xdgcfg" ap
+[[ -f "$WORK/xdgcfg/cosmic/$WI_ID/v3/pill_style" && ! -e "$CFG/cosmic/$WI_ID" ]]
+check "config: the Workspace Icons keys go under XDG_CONFIG_HOME when it is set" $?
+XDG_CONFIG_HOME="$WORK/xdgcfg" ap
+grep -q 'total changes: 0' "$WORK/out"
+check "config: second run with XDG_CONFIG_HOME changes nothing" $?
+reset_state
+ap
+[[ -f "$CFG/cosmic/$WI_ID/v3/pill_style" ]]
+check "config: without XDG_CONFIG_HOME the keys are under ~/.config" $?
+
+# --- spec and README notes -------------------------------------------------------------------------------------
+grep -qi 'crates.io' "$REPO_ROOT/specs/applets.md" && grep -q 'Cargo.lock' <(grep -i 'trust' "$REPO_ROOT/specs/applets.md")
+check "spec: states the crates.io / Cargo.lock trust limit" $?
+grep '^| applets ' "$REPO_ROOT/README.md" | grep -q '/\.cargo' && grep '^| applets ' "$REPO_ROOT/README.md" | grep -q '\.bak' &&
+  grep '^| applets ' "$REPO_ROOT/README.md" | grep -q 'purge.*libxkbcommon-dev'
+check "README: the applets revert covers the ~/.cargo cache, the .bak files and the build packages" $?
+grep -q 'XDG_CONFIG_HOME' "$M"
+check "the module resolves the Workspace Icons config directory through XDG_CONFIG_HOME" $?
+
 # --- static ------------------------------------------------------------------------------------------
 grep '^| applets ' "$REPO_ROOT/README.md" | grep -q 'cosmic-ext-lock-keys'
 check "README: the applets row has a revert column" $?

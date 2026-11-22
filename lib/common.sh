@@ -198,13 +198,27 @@ _user_path_check() {
   if [[ "$plain" != "$_UPATH_HOME"/* && "$plain" != "$_UPATH_HOME" && "$canon" != "$_UPATH_HOME"/* ]]; then
     return 0
   fi
+  # The path is $HOME itself: only its owner matters (it is not "below" $HOME).
+  if [[ "$canon" == "$_UPATH_HOME" ]]; then
+    if [[ "$(stat -c %u -- "$canon" 2>/dev/null)" != "$_UPATH_UID" ]]; then
+      _user_path_warn_once "$canon" "$canon is not owned by $_UPATH_USER: not writing anything there (fix it with: sudo chown $_UPATH_USER $canon)"
+      return 1
+    fi
+    return 0
+  fi
   if [[ "$canon" != "$_UPATH_HOME"/* ]]; then
     _user_path_warn_once "$plain" "$path is a symlink to $canon, outside $HOME: not writing through it"
     return 1
   fi
   p="$canon"
   while [[ "$p" != "$_UPATH_HOME" && -n "$p" ]]; do
-    if [[ -e "$p" || -L "$p" ]]; then
+    # readlink -m returns a looping link unresolved: a symlink left in the
+    # canonical path means a loop.
+    if [[ -L "$p" ]]; then
+      _user_path_warn_once "$plain" "$path is, or lies below, a symlink loop: skipping it"
+      return 1
+    fi
+    if [[ -e "$p" ]]; then
       chain+=("$p")
     fi
     p="${p%/*}"
@@ -1048,7 +1062,7 @@ _gsettings_prepare() {
 _gsettings_get() {
   local tmp rc=0
   tmp="$(mktemp)"
-  timeout "${KCS_GSETTINGS_TIMEOUT:-20}" "${_GSETTINGS_PREFIX[@]}" gsettings get "$1" "$2" >"$tmp" 2>/dev/null </dev/null || rc=$?
+  timeout -k 5 "${KCS_GSETTINGS_TIMEOUT:-20}" "${_GSETTINGS_PREFIX[@]}" gsettings get "$1" "$2" >"$tmp" 2>/dev/null </dev/null || rc=$?
   _GS_VALUE="$(<"$tmp")"
   rm -f -- "$tmp"
   return "$rc"
@@ -1057,7 +1071,7 @@ _gsettings_get() {
 # _gsettings_run <args...>: gsettings with the timeout, no input and no output
 # (the status is what counts).
 _gsettings_run() {
-  timeout "${KCS_GSETTINGS_TIMEOUT:-20}" "${_GSETTINGS_PREFIX[@]}" gsettings "$@" </dev/null >/dev/null 2>&1
+  timeout -k 5 "${KCS_GSETTINGS_TIMEOUT:-20}" "${_GSETTINGS_PREFIX[@]}" gsettings "$@" </dev/null >/dev/null 2>&1
 }
 
 # ensure_gsetting <schema> <key> <value>: set a GSettings key only when the

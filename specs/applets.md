@@ -78,7 +78,23 @@ No service or unit is enabled.
    (`cosmic-ext-applet-now-playing-extended-git`); there is no Kali or Debian
    package and the reference setup does not justify a third unpinned source build,
    so the port has no Now Playing applet and the panel module leaves it out.
-7. **Icon cache.** An existing `icon-theme.cache` in the target hicolor directory is
+7. **Install completeness.** The marker is the only memory of a build, so it is
+   written last and only when the binary, the icon and the metainfo (Lock Keys:
+   the binary and both icons) all exist. For Workspace Icons every destination is
+   checked with `user_path_writable` before anything is built: one that cannot be
+   written skips the whole applet with a warning that its desktop entry is
+   installed ("registered") while its binary was skipped, so a half install is
+   never recorded and the next run retries. The config keys live under
+   `${XDG_CONFIG_HOME:-$HOME/.config}/cosmic`. A symlink loop on a destination is
+   a clean skip with a warning, like a symlink pointing outside `$HOME`.
+8. **Trust limit: crates.io and Cargo.lock.** A commit pin and `--locked` fix the applet's own
+   source and the exact crate versions and hashes of its `Cargo.lock`; they do
+   not make the crates trustworthy. The build still downloads and compiles those
+   crates (and the git dependencies, libcosmic) from crates.io and GitHub as your
+   user, and runs their build scripts. The trust is in the pinned repository's
+   maintainers and in whoever reviewed that `Cargo.lock`; this module does not
+   audit it.
+9. **Icon cache.** An existing `icon-theme.cache` in the target hicolor directory is
    refreshed with `gtk-update-icon-cache` (a failure only warns); none is created.
 
 ## Hardware detection

@@ -158,6 +158,27 @@ unset FAKE_NOT_OWNED
   ! ls "$U".bak.* >/dev/null 2>&1
 check "install_file, ensure_ini_line, ensure_line, ensure_block, remove_line, remove_exact_block and ensure_file_content skip a file owned by someone else (no write, no sudo, no backup)" $?
 
+# --- $HOME itself, symlink loops ------------------------------------------------
+h "user_path_writable '$HOME'" >"$WORK/o" 2>&1
+[[ ! -s "$WORK/o" ]]
+check "user_path_writable: the path \$HOME itself passes without a warning" $?
+FAKE_NOT_OWNED="$HOME" h "user_path_writable '$HOME'" >"$WORK/o" 2>&1 && rc_cmd=0 || rc_cmd=1
+[[ $rc_cmd != 0 ]] && grep -q '\[warn\].*not owned' "$WORK/o" && ! grep -q 'symlink' "$WORK/o"
+check "user_path_writable: a \$HOME owned by someone else is reported as not owned" $?
+ln -s "$HOME/loop-b" "$HOME/loop-a"
+ln -s "$HOME/loop-a" "$HOME/loop-b"
+h "user_path_writable '$HOME/loop-a'" >"$WORK/o" 2>&1 && rc_cmd=0 || rc_cmd=1
+[[ $rc_cmd != 0 ]] && grep -q '\[warn\].*loop' "$WORK/o"
+check "user_path_writable: a symlink loop is a clean skip with a warning" $?
+h "user_path_writable '$HOME/loop-a/child.conf'" >"$WORK/o" 2>&1 && rc_cmd=0 || rc_cmd=1
+[[ $rc_cmd != 0 ]] && grep -q '\[warn\].*loop' "$WORK/o"
+check "user_path_writable: a path below a symlink loop is a clean skip with a warning" $?
+h "install_file '$WORK/src.txt' '$HOME/loop-a' 0644; ensure_line '$HOME/loop-b' x; ensure_block '$HOME/loop-b' n c" >"$WORK/o" 2>&1
+rc=$?
+[[ $rc == 0 ]] && ! grep -q '\[error\]' "$WORK/o"
+check "install_file, ensure_line and ensure_block skip a symlink loop without failing" $?
+rm -f -- "$HOME/loop-a" "$HOME/loop-b"
+
 # --- ensure_block: a missing end marker ---------------------------------------
 B="$WORK/nomarker.rc"
 printf 'before\n# >>> kali-cosmic-setup:x >>>\nold\nafter the lost end marker\nmore\n' >"$B"
@@ -188,6 +209,10 @@ h "ensure_line '$L' 'another plain line'" >/dev/null 2>&1
 grep -qx 'another plain line' "$L"
 check "ensure_line: a line without = is appended as before" $?
 
+# --- timeout -k on gsettings and dbus-run-session -----------------------------
+grep -q 'timeout -k' <(sed -n '/^_gsettings_get/,/^}/p;/^_gsettings_run/,/^}/p' "$REPO_ROOT/lib/common.sh") && ! grep -q 'timeout "\${KCS_GSETTINGS_TIMEOUT:-20}" ' "$REPO_ROOT/lib/common.sh"
+check "gsettings calls use timeout -k (a stuck gsettings or dbus-run-session is killed)" $?
+
 # --- ensure_gsetting ----------------------------------------------------------
 export DBUS_SESSION_BUS_ADDRESS=unix:path=/fake-session-bus
 GSV="$FAKE_STATE/gsettings"
@@ -215,7 +240,7 @@ rc=$?
 check "ensure_gsetting: a failing set is a warning, not a module failure" $?
 rm -rf -- "$GSV"
 h "ensure_gsetting org.gnome.desktop.interface color-scheme \"'prefer-dark'\"" >/dev/null 2>&1
-grep -q 'timeout "${KCS_GSETTINGS_TIMEOUT:-20}"' "$REPO_ROOT/lib/common.sh"
+grep -q 'KCS_GSETTINGS_TIMEOUT:-20' "$REPO_ROOT/lib/common.sh"
 check "gsettings calls go through timeout 20 (default)" $?
 # A set that hangs is cut off: the fake sleeps longer than the (shortened) limit.
 cp "$WORK/bin/gsettings" "$WORK/gsettings.real"

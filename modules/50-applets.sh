@@ -100,30 +100,42 @@ _applets_refresh_icons() {
 # (its Exec holds the user's home) and the config keys are always compared.
 _applets_workspace_icons() {
   local src="$REPO_ROOT/files/applets" bin="$HOME/.local/bin/$_APPLETS_WI_NAME"
-  local share="${XDG_DATA_HOME:-$HOME/.local/share}" f rel
+  local share="${XDG_DATA_HOME:-$HOME/.local/share}" cfg="${XDG_CONFIG_HOME:-$HOME/.config}" f rel
+  local desktop="$share/applications/$_APPLETS_WI_ID.desktop"
+  local icon="$share/icons/hicolor/scalable/apps/$_APPLETS_WI_ID.svg"
+  local meta="$share/metainfo/$_APPLETS_WI_ID.metainfo.xml"
 
-  install_template "$src/$_APPLETS_WI_ID.desktop.in" "$share/applications/$_APPLETS_WI_ID.desktop" 0644 || return 1
+  install_template "$src/$_APPLETS_WI_ID.desktop.in" "$desktop" 0644 || return 1
   while IFS= read -r -d '' f; do
     rel="${f#"$src"/cosmic/}"
-    install_file "$f" "$HOME/.config/cosmic/$rel" 0644 || return 1
+    install_file "$f" "$cfg/cosmic/$rel" 0644 || return 1
   done < <(find "$src/cosmic" -type f -print0 | sort -z)
 
   _applets_current "$_APPLETS_WI_NAME" "$_APPLETS_WI_COMMIT" "$bin" && return 0
-  # Never build for a location the user cannot write (and never use sudo there).
-  user_path_writable "$bin" || return 0
-  if [[ "$DRY_RUN" == "1" ]]; then
-    log_change "build and install $_APPLETS_WI_NAME (commit $_APPLETS_WI_COMMIT) to $bin"
+  # Never build for a location the user cannot write (and never use sudo there):
+  # every destination is checked first, so the binary is never installed without
+  # its icon and metainfo (and the marker never says "done" for a partial install).
+  if ! user_path_writable "$bin" || ! user_path_writable "$icon" || ! user_path_writable "$meta"; then
+    if [[ -e "$desktop" ]]; then
+      log_warn "Workspace Icons is registered (its desktop entry is installed) but its binary was skipped because a destination is not writable by you (see the warning above): the applet will not start until you fix it and run this module again"
+    fi
     return 0
   fi
   log_change "build and install $_APPLETS_WI_NAME (commit $_APPLETS_WI_COMMIT) to $bin"
+  if [[ "$DRY_RUN" == "1" ]]; then
+    return 0
+  fi
   _applets_build "$_APPLETS_WI_NAME" "$_APPLETS_WI_URL" "$_APPLETS_WI_COMMIT" || return 1
   install_file "$_APPLETS_SRC/target/release/$_APPLETS_WI_NAME" "$bin" 0755 nobackup || return 1
-  install_file "$_APPLETS_SRC/resources/$_APPLETS_WI_ID.svg" \
-    "$share/icons/hicolor/scalable/apps/$_APPLETS_WI_ID.svg" 0644 nobackup || return 1
-  install_file "$_APPLETS_SRC/resources/$_APPLETS_WI_ID.metainfo.xml" \
-    "$share/metainfo/$_APPLETS_WI_ID.metainfo.xml" 0644 nobackup || return 1
+  install_file "$_APPLETS_SRC/resources/$_APPLETS_WI_ID.svg" "$icon" 0644 nobackup || return 1
+  install_file "$_APPLETS_SRC/resources/$_APPLETS_WI_ID.metainfo.xml" "$meta" 0644 nobackup || return 1
   _applets_refresh_icons "$share/icons/hicolor"
-  _applets_record "$_APPLETS_WI_NAME" "$_APPLETS_WI_COMMIT"
+  # Record the build only when every artifact is really there.
+  if [[ -x "$bin" && -f "$icon" && -f "$meta" ]]; then
+    _applets_record "$_APPLETS_WI_NAME" "$_APPLETS_WI_COMMIT"
+  else
+    log_warn "$_APPLETS_WI_NAME: not every file was installed: not recording the build, it is retried on the next run"
+  fi
   rm -rf -- "$_APPLETS_SRC"
   _APPLETS_SRC=""
 }
@@ -147,7 +159,12 @@ _applets_lock_keys() {
       install_file "$_APPLETS_SRC/data/icons/caps-lock-symbolic.svg" "$icons/caps-lock-symbolic.svg" 0644 nobackup || return 1
       install_file "$_APPLETS_SRC/data/icons/num-lock-symbolic.svg" "$icons/num-lock-symbolic.svg" 0644 nobackup || return 1
       _applets_refresh_icons "$(dirname "$(dirname "$icons")")" sudo
-      _applets_record "$_APPLETS_LK_NAME" "$_APPLETS_LK_COMMIT"
+      # Record the build only when every artifact is really there.
+      if [[ -x "$bin" && -f "$icons/caps-lock-symbolic.svg" && -f "$icons/num-lock-symbolic.svg" ]]; then
+        _applets_record "$_APPLETS_LK_NAME" "$_APPLETS_LK_COMMIT"
+      else
+        log_warn "$_APPLETS_LK_NAME: not every file was installed: not recording the build, it is retried on the next run"
+      fi
       rm -rf -- "$_APPLETS_SRC"
       _APPLETS_SRC=""
     fi
